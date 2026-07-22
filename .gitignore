@@ -1,0 +1,4 @@
+node_modules/
+dist/
+research_*.json
+*.har

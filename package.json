@@ -1,0 +1,20 @@
+{
+  "name": "browser-research-toolkit",
+  "version": "4.0.0",
+  "description": "Instrumented, redaction-first network/DOM research collector for the browser (fetch/XHR/WebSocket/Beacon/EventSource + DOM/storage/performance monitors).",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc && npm run bundle",
+    "bundle": "esbuild src/index.ts --bundle --format=iife --target=es2020 --outfile=dist/research-toolkit.bundle.js",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/unit/*.test.js tests/integration/*.test.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.6.0"
+  },
+  "license": "MIT"
+}
