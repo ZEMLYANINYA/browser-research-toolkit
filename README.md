@@ -174,6 +174,10 @@ while browsing — endpoints and JSON responses should populate as the page make
     everything."
   - Storage item size was computed with `.length` (UTF-16 code units), not actual byte size — now uses
     `new Blob([value]).size`.
+  - Bare `navigator.*` references (in the beacon interceptor, the exporter's `userAgent` field, and the
+    auto-export-on-unload path) crashed under Node 20 — Node didn't have a global `navigator` at all before
+    v21, so it's simply absent on the 20.x line. Always safe in a real browser; this is the first bug the
+    CI matrix itself caught (Node 22.x passed, 20.x didn't) rather than local testing.
 
 ## Lessons learned
 

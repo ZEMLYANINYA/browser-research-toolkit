@@ -7,7 +7,11 @@ export class BeaconInterceptor implements Interceptor {
   constructor(private readonly ctx: CollectorContext) {}
 
   install(): void {
-    if (!navigator.sendBeacon) return;
+    // Bug fix: `navigator` itself doesn't exist as a global before Node 21 (added
+    // there, not backported to the 20.x LTS line) — this bare reference is exactly
+    // what crashed the Node 20.x CI matrix job while 22.x passed. Always present in
+    // a real browser; only Node's own test runtime needs the guard.
+    if (typeof navigator === 'undefined' || !navigator.sendBeacon) return;
     this.original = navigator.sendBeacon.bind(navigator);
     const original = this.original;
     const ctx = this.ctx;
@@ -25,6 +29,6 @@ export class BeaconInterceptor implements Interceptor {
   }
 
   restore(): void {
-    if (this.original) navigator.sendBeacon = this.original;
+    if (this.original && typeof navigator !== 'undefined') navigator.sendBeacon = this.original;
   }
 }

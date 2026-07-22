@@ -25,7 +25,7 @@ if (window.RESEARCH_CONFIG?.autoExportOnUnload) {
     try {
       const data = collector.exportData();
       const beaconUrl = window.RESEARCH_CONFIG?.beaconUrl;
-      if (navigator.sendBeacon && beaconUrl) {
+      if (typeof navigator !== 'undefined' && navigator.sendBeacon && beaconUrl) {
         navigator.sendBeacon(beaconUrl, JSON.stringify(data));
       }
     } catch (e) {

@@ -28,7 +28,7 @@ export class Exporter {
       meta: {
         exportTime: new Date().toISOString(),
         url: window.location.href,
-        userAgent: navigator.userAgent,
+        userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
         version: '4.0-ts',
         uptime: Date.now() - this.startTime,
       },
