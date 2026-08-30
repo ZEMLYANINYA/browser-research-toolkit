@@ -11,6 +11,42 @@ Originally a single 1300-line script (`v3.0`, JS). This is a full rewrite:
 strict TypeScript, one responsibility per module, no global monkey-patching
 left un-restorable.
 
+## Project structure
+
+Browser Research Toolkit now has two complementary implementations:
+
+### Core 4.x
+
+The TypeScript core in [`src/`](src/) is the reusable instrumentation collector.
+It can be bundled as a standalone browser script or imported as a module and
+focuses on redaction-first network, DOM, storage, performance, and navigation
+observability.
+
+### BRT Extension 0.4.x
+
+[`extensions/brt-extension/`](extensions/brt-extension/) is the Chrome
+Manifest V3 research environment built around the same observability-first
+principles. It adds:
+
+- a persistent side-panel research dashboard;
+- session-oriented network and DOM capture;
+- bounded storage, backpressure, and task scheduling;
+- DOM/network/source correlation;
+- passive anti-bot evidence analysis;
+- optional Chrome DevTools Protocol-assisted deep capture;
+- local-first export and diagnostics.
+
+The extension remains an observability and research tool. Active exploitation,
+credential interception, CAPTCHA solving, fingerprint spoofing, stealth/evasion,
+token replay, and access-control bypass are outside the public project's scope.
+
+Extension documentation:
+
+- [Extension architecture](docs/extension/EXTENSION_ARCHITECTURE.md)
+- [Security model](docs/extension/SECURITY_MODEL.md)
+- [Release checklist](docs/extension/EXTENSION_RELEASE_CHECKLIST.md)
+- [Extension README](extensions/brt-extension/README.md)
+
 ## Why this exists
 
 Started as a one-off script to answer "what API is this page actually

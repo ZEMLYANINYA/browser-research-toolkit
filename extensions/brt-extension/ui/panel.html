@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Browser Research Toolkit</title>
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brandBlock">
+      <div class="brandRow"><span class="brandMark">BRT</span><h1>Browser Research Toolkit</h1><span class="version">v0.4.0</span></div>
+      <div id="pageInfo" class="muted pageInfo">No active page</div>
+    </div>
+    <div class="statusStack">
+      <span id="status" class="statusPill stopped"><span class="statusDot"></span>STOPPED</span>
+      <span id="sessionClock" class="sessionClock">00:00</span>
+    </div>
+  </header>
+
+  <section class="controlDeck">
+    <div class="controlPrimary">
+      <button id="startBtn" class="button primary">Start capture</button>
+      <button id="stopBtn" class="button">Stop</button>
+      <label class="selectShell">Mode<select id="captureMode"><option value="light">LIGHT</option><option value="standard" selected>STANDARD</option><option value="deep">DEEP / CDP</option></select></label>
+      <label class="toggle"><input id="antiBotToggle" type="checkbox" checked /><span></span>Anti-bot</label>
+    </div>
+    <details class="moreActions">
+      <summary>Session tools</summary>
+      <div class="moreGrid">
+        <button id="refreshBtn" class="button">Refresh sources</button>
+        <button id="exportBtn" class="button">Export JSON</button>
+        <button id="importBtn" class="button">Import JSON</button>
+        <input id="importFile" type="file" accept="application/json" hidden />
+        <button id="clearBtn" class="button dangerGhost">Clear</button>
+        <input id="markerText" class="field" type="text" placeholder="experiment marker" maxlength="200" />
+        <button id="markBtn" class="button">Add marker</button>
+      </div>
+    </details>
+  </section>
+
+  <nav class="tabs" aria-label="Research views">
+    <button class="tab active" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="timeline">Timeline</button>
+    <button class="tab" data-tab="network">Network</button>
+    <button class="tab" data-tab="graph">Graph</button>
+    <button class="tab" data-tab="antibot">Anti-bot</button>
+    <button class="tab" data-tab="search">Search</button>
+    <button class="tab" data-tab="sources">Sources</button>
+    <button class="tab" data-tab="lab">Lab</button>
+    <button class="tab" data-tab="session">Session</button>
+  </nav>
+
+  <main>
+    <section id="tab-overview" class="tabPane active">
+      <div id="stats" class="metricGrid"></div>
+      <div class="dashboardGrid">
+        <article class="card span2">
+          <div class="cardHeader"><div><h2>Live activity</h2><p>Retained events across the current session</p></div><span id="activityPeak" class="microBadge">peak 0</span></div>
+          <div id="activityChart" class="chartSurface emptyState">Start capture or import a session.</div>
+          <div class="legend"><span><i class="legendDot networkDot"></i>Network</span><span><i class="legendDot domDot"></i>DOM</span><span><i class="legendDot navDot"></i>Navigation</span><span><i class="legendDot sourceDot"></i>Sources</span></div>
+        </article>
+        <article class="card">
+          <div class="cardHeader"><div><h2>Session health</h2><p>Capture integrity and retention</p></div></div>
+          <div id="healthPanel" class="healthList"></div>
+        </article>
+        <article class="card">
+          <div class="cardHeader"><div><h2>Evidence provenance</h2><p>Where retained timeline evidence originated</p></div></div>
+          <div id="provenancePanel"></div>
+        </article>
+        <article class="card span2">
+          <div class="cardHeader"><div><h2>Network pulse</h2><p>Top transports and hosts</p></div><button class="textButton" data-open-tab="network">Open network →</button></div>
+          <div id="networkPulse" class="splitPanel"></div>
+        </article>
+        <article class="card span2">
+          <div class="cardHeader"><div><h2>Recent evidence</h2><p>High-signal tail of the timeline</p></div><button class="textButton" data-open-tab="timeline">Open timeline →</button></div>
+          <div id="recentEvidence" class="compactFeed"></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="tab-timeline" class="tabPane">
+      <div class="paneHeader"><div><h2>Timeline</h2><p>Chronological evidence retained by the session.</p></div><label class="selectShell">Kind<select id="timelineFilter"><option value="">All events</option><option value="network">Network</option><option value="dom-event">DOM</option><option value="navigation">Navigation</option><option value="mutation">Mutation</option><option value="timer">Timers</option><option value="performance">Performance</option></select></label></div>
+      <div id="timelineHeatmap" class="heatmap"></div>
+      <div id="timeline" class="list"></div>
+    </section>
+
+    <section id="tab-network" class="tabPane">
+      <div class="paneHeader"><div><h2>Network</h2><p>Requests, responses, status composition and timing.</p></div><div class="filterRow"><label class="selectShell">Transport<select id="networkFilter"><option value="">All</option><option value="fetch">fetch</option><option value="xhr">XHR</option><option value="beacon">Beacon</option><option value="websocket">WebSocket</option><option value="eventsource">EventSource</option></select></label><label class="selectShell">Class<select id="networkClassFilter"><option value="">All</option><option value="graphql">GraphQL</option><option value="analytics">Analytics</option><option value="anti-bot-signal">Anti-bot</option><option value="static-asset">Static</option></select></label></div></div>
+      <div class="networkDashboard"><div id="waterfall" class="card"></div><div id="networkSummary" class="card"></div></div>
+      <div id="network" class="list"></div>
+      <aside id="networkDetails" class="details muted">Select a network record to inspect sanitized request, response, body and evidence.</aside>
+    </section>
+
+    <section id="tab-graph" class="tabPane">
+      <div class="paneHeader"><div><h2>Correlation graph</h2><p>Candidate event relationships. Temporal proximity is evidence, not causality.</p></div></div>
+      <div class="graphToolbar">
+        <label class="selectShell">Event<select id="graphKindFilter"><option value="all">All</option><option value="dom">DOM</option><option value="network">Network</option><option value="navigation">Navigation</option></select></label>
+        <label class="graphHostField">Host<input id="graphHostFilter" class="field" type="search" placeholder="api.example.com" /></label>
+        <label class="selectShell">Relations<select id="graphLimit"><option value="18" selected>18</option><option value="36">36</option><option value="72">72</option><option value="120">120</option></select></label>
+        <button id="graphResetBtn" class="button">Reset</button>
+        <span id="graphMeta" class="muted">No filters</span>
+      </div>
+      <div class="graphLegend" aria-label="Graph legend">
+        <span><i class="graphLegendMark dom"></i>DOM event</span>
+        <span><i class="graphLegendMark network"></i>Network request</span>
+        <span><i class="graphLegendMark navigation"></i>Navigation</span>
+        <span><i class="graphLegendArrow">→</i>observed order</span>
+        <span><i class="graphLegendCandidate"></i>candidate</span>
+        <span><i class="graphLegendReviewed"></i>reviewed related</span>
+      </div>
+      <div id="correlationGraph" class="graphCanvas emptyState">No candidate relationships yet.</div>
+      <div id="graphInspector" class="details muted">Click a node to focus its connected relationships, or click an edge to inspect its evidence.</div>
+    </section>
+
+    <section id="tab-antibot" class="tabPane">
+      <div class="paneHeader"><div><h2>Anti-bot observability</h2><p>Passive heuristic evidence only. No bypass, solving or evasion actions are performed.</p></div></div>
+      <div id="antibotStats" class="metricGrid compact"></div>
+      <div id="antibotAnalysis" class="list"></div>
+      <div id="antibotTimeline" class="card"></div>
+      <div id="antibotSignals" class="list"></div>
+    </section>
+
+    <section id="tab-search" class="tabPane">
+      <div class="paneHeader"><div><h2>Evidence search</h2><p>Search retained HTML, JavaScript, network and runtime evidence.</p></div></div>
+      <div class="searchRow"><input id="searchInput" class="field" type="search" placeholder="conceptId, operationName, /graphql, kwrefId…" /><button id="searchBtn" class="button primary">Search</button></div>
+      <div class="scopes"><label><input type="checkbox" id="scopeHtml" checked /> HTML</label><label><input type="checkbox" id="scopeJs" checked /> JavaScript</label><label><input type="checkbox" id="scopeNetwork" checked /> Network</label><label><input type="checkbox" id="scopeRuntime" checked /> Runtime</label><label><input type="checkbox" id="scopeTimeline" checked /> Timeline</label><label><input type="checkbox" id="scopeDiagnostics" /> Evidence</label><label><input type="checkbox" id="searchRegex" /> Regex</label><label><input type="checkbox" id="searchCase" /> Case sensitive</label></div>
+      <div id="searchMeta" class="muted"></div><div id="searchResults" class="list"></div>
+    </section>
+
+    <section id="tab-sources" class="tabPane"><div class="paneHeader"><div><h2>Sources</h2><p>Indexed first-party and selected third-party source evidence.</p></div></div><div id="sources" class="list"></div><aside id="sourceDetails" class="details muted">Select a source to inspect bounded text and static findings.</aside></section>
+
+    <section id="tab-lab" class="tabPane">
+      <div class="paneHeader"><div><h2>Research lab</h2><p>API families, correlation review and diagnostics.</p></div></div>
+      <div class="subTabs"><button class="subTab active" data-lab="api">API Explorer</button><button class="subTab" data-lab="correlation">Correlation review</button><button class="subTab" data-lab="diagnostics">Diagnostics</button></div>
+      <section id="lab-api" class="labPane active"><div id="apiExplorer" class="list"></div></section>
+      <section id="lab-correlation" class="labPane"><div id="correlations" class="list"></div></section>
+      <section id="lab-diagnostics" class="labPane"><div id="diagnostics" class="list"></div></section>
+    </section>
+
+    <section id="tab-session" class="tabPane">
+      <div class="paneHeader"><div><h2>Session internals</h2><p>Capture settings, storage, lifecycle and watched runtime paths.</p></div></div>
+      <div class="searchRow"><input id="watchPath" class="field" type="text" placeholder="window.ve.context" /><button id="watchBtn" class="button">Watch path</button></div>
+      <div id="watchList" class="list"></div>
+      <h3>Task history</h3>
+      <div id="tasks" class="list"></div>
+      <pre id="sessionDump" class="code sessionDump"></pre>
+    </section>
+  </main>
+
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

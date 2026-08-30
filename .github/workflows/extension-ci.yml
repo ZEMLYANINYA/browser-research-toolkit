@@ -1,0 +1,36 @@
+name: Extension CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'extensions/brt-extension/**'
+      - 'docs/extension/**'
+      - '.github/workflows/extension-ci.yml'
+
+  pull_request:
+    branches: [main]
+    paths:
+      - 'extensions/brt-extension/**'
+      - 'docs/extension/**'
+      - '.github/workflows/extension-ci.yml'
+
+jobs:
+  verify-extension:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Verify extension
+        working-directory: extensions/brt-extension
+        run: npm run verify

@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "Browser Research Toolkit",
+  "version": "0.4.0",
+  "description": "Local-first browser research extension with passive observability, CDP-assisted deep capture, evidence correlation, anti-bot signals, and a visual research dashboard.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "sidePanel",
+    "tabs",
+    "storage",
+    "unlimitedStorage",
+    "webNavigation",
+    "debugger"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open Browser Research Toolkit"
+  },
+  "side_panel": {
+    "default_path": "ui/panel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "src/page-agent.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "src/content-bridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "homepage_url": "https://github.com/ZEMLYANINYA/browser-research-toolkit"
+}
