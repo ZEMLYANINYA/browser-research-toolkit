@@ -4,6 +4,7 @@ import {
   classifyAntiBotRecord,
   detectChallengePage,
   detectProtectionsFromCookies,
+  isF5RejectPage,
   detectProtectionsFromHeaders
 } from './antibot.js';
 
@@ -22,8 +23,7 @@ const PROTECTION_SIGNATURES = Object.freeze({
   'Incapsula (Imperva)': [/incapsula/i, /imperva/i, /incapsula\.net/i],
   Fastly: [/fastly\.net/i],
   'F5 BIG-IP / Advanced WAF': [
-    /\/TSPD\/(?:\?|$)/i,
-    /the requested url was rejected[\s\S]{0,1200}your support id is/i
+    /\/TSPD\/(?:\?|$)/i
   ]
 });
 
@@ -66,6 +66,16 @@ function addMatches(map, text, source, at = null) {
   for (const [name, patterns] of Object.entries(PROTECTION_SIGNATURES)) {
     if (patterns.some(pattern => pattern.test(value))) addEvidence(map, name, source || value.slice(0, 160), at);
   }
+
+  if (isF5RejectPage(value)) {
+    addEvidence(
+      map,
+      'F5 BIG-IP / Advanced WAF',
+      source || value.slice(0, 160),
+      at
+    );
+  }
+
   for (const [name, patterns] of Object.entries(CAPTCHA_SIGNATURES)) {
     if (patterns.some(pattern => pattern.test(value))) addEvidence(map, name, source || value.slice(0, 160), at);
   }

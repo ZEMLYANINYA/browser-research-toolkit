@@ -95,3 +95,96 @@ test('ordinary page does not produce F5 evidence', () => {
   assert.equal(detectChallengePage(session.html), false);
   assert.equal(detectProtections(session).includes(F5), false);
 });
+test('F5 reject page in network body is classified as strong provider evidence', () => {
+  const result = classifyAntiBotRecord({
+    kind: 'network-body',
+    data: {
+      text: `
+        <html>
+          <body>
+            The requested URL was rejected.
+            Please consult with your administrator.
+            Your support ID is: 1234567890123456789
+          </body>
+        </html>
+      `
+    }
+  });
+
+  assert.equal(result.isAntiBotSignal, true);
+  assert.ok(result.categories.includes('f5'));
+  assert.ok(result.categories.includes('challenge'));
+  assert.ok(result.evidence.includes('matched:f5-reject-page'));
+});
+
+test('F5 reject page from network body contributes provider detection without session.html', () => {
+  const session = {
+    network: [
+      {
+        kind: 'network-body',
+        data: {
+          text: `
+            The requested URL was rejected.
+            Your support ID is: 1234567890123456789
+          `
+        }
+      }
+    ],
+    timeline: [],
+    sources: [],
+    html: ''
+  };
+
+  assert.ok(detectProtections(session).includes(F5));
+});
+
+test('F5 reject detection allows long text between rejection and support ID phrases', () => {
+  const body = `
+    The requested URL was rejected.
+    ${'x'.repeat(7000)}
+    Your support ID is: 1234567890123456789
+  `;
+
+  assert.equal(detectChallengePage(body), true);
+
+  const session = {
+    network: [],
+    timeline: [],
+    sources: [],
+    html: body
+  };
+
+  assert.ok(detectProtections(session).includes(F5));
+});
+
+test('F5 reject detection requires both characteristic phrases', () => {
+  assert.equal(
+    detectChallengePage('The requested URL was rejected.'),
+    false
+  );
+
+  assert.equal(
+    detectChallengePage('Your support ID is: 123456789'),
+    false
+  );
+});
+
+
+test('F5 reject detection is independent of phrase order', () => {
+  const body = `
+    Your support ID is: 1234567890123456789
+    Some explanatory text.
+    The requested URL was rejected.
+  `;
+
+  assert.equal(detectChallengePage(body), true);
+
+  const result = classifyAntiBotRecord({
+    kind: 'network-body',
+    data: { text: body }
+  });
+
+  assert.equal(result.isAntiBotSignal, true);
+  assert.ok(result.categories.includes('f5'));
+  assert.ok(result.categories.includes('challenge'));
+});

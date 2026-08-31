@@ -99,6 +99,7 @@ const TELEMETRY_ENDPOINT_RULES = Object.freeze([
 ]);
 
 const MAX_SIGNAL_TEXT = 6000;
+const MAX_F5_REJECT_TEXT = 80_000;
 const MAX_SIGNALS = 500;
 const MAX_LIFECYCLE_DOCUMENT_IDS = 500;
 const DEDUP_WINDOW_MS = 5000;
@@ -132,6 +133,15 @@ function cookieText(cookies) {
     if (typeof cookie === 'string') return cookie;
     return `${cookie?.name || ''}=${cookie?.value || ''}`;
   }).join('; ').slice(0, 4000).toLowerCase();
+}
+
+export function isF5RejectPage(text) {
+  const value = boundedScalar(text, MAX_F5_REJECT_TEXT);
+
+  return (
+    /the requested url was rejected/i.test(value) &&
+    /your support id is/i.test(value)
+  );
 }
 
 export function detectProtectionsFromHeaders(headers) {
@@ -199,6 +209,7 @@ function endpointEvidence(record) {
 export function classifyAntiBotRecord(record) {
   const data = record?.data || {};
   const text = collectEvidenceText(record);
+  const f5RejectPage = isF5RejectPage(data.text);
   const textRules = ANTIBOT_RULES.filter(rule => rule.pattern.test(text));
   const endpoints = endpointEvidence(record);
   const headerProtections = detectProtectionsFromHeaders(data.responseHeaders || data.headers);
@@ -213,6 +224,12 @@ export function classifyAntiBotRecord(record) {
         : protection.toLowerCase()
     );
   }
+
+  if (f5RejectPage) {
+    categorySet.add('f5');
+    categorySet.add('challenge');
+  }
+
   if (Number(data.status) === 429) categorySet.add('rate-limit');
   const categories = [...categorySet];
 
@@ -252,6 +269,7 @@ export function classifyAntiBotRecord(record) {
       ...endpoints.positives.map(rule => `endpoint:${rule.id}`),
       ...endpoints.telemetry.map(rule => `telemetry:${rule.id}`),
       ...[...new Set([...headerProtections, ...cookieProtections])].map(name => `provider:${name}`),
+      ...(f5RejectPage ? ['matched:f5-reject-page'] : []),
       ...(Number(data.status) === 429 ? ['status:429'] : [])
     ]
   };
@@ -360,11 +378,7 @@ export function detectChallengePage(text) {
   const genericChallenge =
     /cloudflare|checking your browser|captcha|challenge|verify you are human|access denied|security check|please wait/i.test(value);
 
-  const f5Rejected =
-    /the requested url was rejected/i.test(value) &&
-    /your support id is/i.test(value);
-
-  return genericChallenge || f5Rejected;
+  return genericChallenge || isF5RejectPage(text);
 }
 
 function freshLifecycle() {
