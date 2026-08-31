@@ -78,6 +78,13 @@ export const ANTIBOT_ENDPOINT_RULES = Object.freeze([
     categories: ['captcha', 'datadome'],
     weight: 0.91,
     strong: true
+  },
+  {
+    id: 'f5-tspd',
+    pattern: /\/TSPD\/(?:\?|$)/i,
+    categories: ['challenge', 'f5'],
+    weight: 0.93,
+    strong: true
   }
 ]);
 
@@ -92,6 +99,7 @@ const TELEMETRY_ENDPOINT_RULES = Object.freeze([
 ]);
 
 const MAX_SIGNAL_TEXT = 6000;
+const MAX_F5_REJECT_TEXT = 80_000;
 const MAX_SIGNALS = 500;
 const MAX_LIFECYCLE_DOCUMENT_IDS = 500;
 const DEDUP_WINDOW_MS = 5000;
@@ -127,6 +135,15 @@ function cookieText(cookies) {
   }).join('; ').slice(0, 4000).toLowerCase();
 }
 
+export function isF5RejectPage(text) {
+  const value = boundedScalar(text, MAX_F5_REJECT_TEXT);
+
+  return (
+    /the requested url was rejected/i.test(value) &&
+    /your support id is/i.test(value)
+  );
+}
+
 export function detectProtectionsFromHeaders(headers) {
   const h = normalizedHeaders(headers);
   const protections = new Set();
@@ -148,6 +165,9 @@ export function detectProtectionsFromCookies(cookies) {
   if (/(?:^|[;\s])(?:_px|_px2|_px3|px[0-9]+)=/i.test(text)) protections.add('PerimeterX');
   if (/(?:^|[;\s])datadome=/i.test(text)) protections.add('DataDome');
   if (/(?:^|[;\s])(?:incap_ses|visid_incap)=/i.test(text)) protections.add('Incapsula');
+  if (/(?:^|[;\s])(?:tspd_[^=;\s]*|ts[0-9a-f]{8,}|bigipserver[^=;\s]*)=/i.test(text)) {
+    protections.add('F5 BIG-IP / Advanced WAF');
+  }
   return [...protections];
 }
 
@@ -189,6 +209,7 @@ function endpointEvidence(record) {
 export function classifyAntiBotRecord(record) {
   const data = record?.data || {};
   const text = collectEvidenceText(record);
+  const f5RejectPage = isF5RejectPage(data.text);
   const textRules = ANTIBOT_RULES.filter(rule => rule.pattern.test(text));
   const endpoints = endpointEvidence(record);
   const headerProtections = detectProtectionsFromHeaders(data.responseHeaders || data.headers);
@@ -196,7 +217,19 @@ export function classifyAntiBotRecord(record) {
 
   const categorySet = new Set(textRules.map(rule => rule.id));
   for (const endpoint of endpoints.positives) for (const category of endpoint.categories) categorySet.add(category);
-  for (const protection of [...headerProtections, ...cookieProtections]) categorySet.add(protection.toLowerCase());
+  for (const protection of [...headerProtections, ...cookieProtections]) {
+    categorySet.add(
+      protection === 'F5 BIG-IP / Advanced WAF'
+        ? 'f5'
+        : protection.toLowerCase()
+    );
+  }
+
+  if (f5RejectPage) {
+    categorySet.add('f5');
+    categorySet.add('challenge');
+  }
+
   if (Number(data.status) === 429) categorySet.add('rate-limit');
   const categories = [...categorySet];
 
@@ -236,6 +269,7 @@ export function classifyAntiBotRecord(record) {
       ...endpoints.positives.map(rule => `endpoint:${rule.id}`),
       ...endpoints.telemetry.map(rule => `telemetry:${rule.id}`),
       ...[...new Set([...headerProtections, ...cookieProtections])].map(name => `provider:${name}`),
+      ...(f5RejectPage ? ['matched:f5-reject-page'] : []),
       ...(Number(data.status) === 429 ? ['status:429'] : [])
     ]
   };
@@ -340,7 +374,11 @@ export function analyzeBehaviorPatterns(records, options = {}) {
 
 export function detectChallengePage(text) {
   const value = boundedScalar(text, MAX_SIGNAL_TEXT);
-  return /cloudflare|checking your browser|captcha|challenge|verify you are human|access denied|security check|please wait/i.test(value);
+
+  const genericChallenge =
+    /cloudflare|checking your browser|captcha|challenge|verify you are human|access denied|security check|please wait/i.test(value);
+
+  return genericChallenge || isF5RejectPage(text);
 }
 
 function freshLifecycle() {

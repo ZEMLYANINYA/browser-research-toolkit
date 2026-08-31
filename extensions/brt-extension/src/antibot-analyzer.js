@@ -4,6 +4,7 @@ import {
   classifyAntiBotRecord,
   detectChallengePage,
   detectProtectionsFromCookies,
+  isF5RejectPage,
   detectProtectionsFromHeaders
 } from './antibot.js';
 
@@ -20,7 +21,10 @@ const PROTECTION_SIGNATURES = Object.freeze({
   PerimeterX: [/perimeterx/i, /px-captcha/i, /px[0-9]+/i],
   DataDome: [/datadome/i, /datadome\.co/i],
   'Incapsula (Imperva)': [/incapsula/i, /imperva/i, /incapsula\.net/i],
-  Fastly: [/fastly\.net/i]
+  Fastly: [/fastly\.net/i],
+  'F5 BIG-IP / Advanced WAF': [
+    /\/TSPD\/(?:\?|$)/i
+  ]
 });
 
 const CAPTCHA_SIGNATURES = Object.freeze({
@@ -62,6 +66,16 @@ function addMatches(map, text, source, at = null) {
   for (const [name, patterns] of Object.entries(PROTECTION_SIGNATURES)) {
     if (patterns.some(pattern => pattern.test(value))) addEvidence(map, name, source || value.slice(0, 160), at);
   }
+
+  if (isF5RejectPage(value)) {
+    addEvidence(
+      map,
+      'F5 BIG-IP / Advanced WAF',
+      source || value.slice(0, 160),
+      at
+    );
+  }
+
   for (const [name, patterns] of Object.entries(CAPTCHA_SIGNATURES)) {
     if (patterns.some(pattern => pattern.test(value))) addEvidence(map, name, source || value.slice(0, 160), at);
   }
@@ -79,11 +93,24 @@ export function detectProtectionDetails(session) {
     for (const name of detectProtectionsFromCookies(data.cookies || data.setCookie)) addEvidence(details, name, `cookie:${name}`, item.wallTime);
     const classification = classifyAntiBotRecord(item);
     for (const category of classification.categories || []) {
-      const provider = ({ cloudflare: 'Cloudflare', akamai: 'Akamai', perimeterx: 'PerimeterX', datadome: 'DataDome', incapsula: 'Incapsula (Imperva)' })[category];
+      const provider = ({
+        cloudflare: 'Cloudflare',
+        akamai: 'Akamai',
+        perimeterx: 'PerimeterX',
+        datadome: 'DataDome',
+        incapsula: 'Incapsula (Imperva)',
+        f5: 'F5 BIG-IP / Advanced WAF'
+      })[category];
       if (provider) addEvidence(details, provider, `category:${category}`, item.wallTime);
     }
     for (const name of [...(classification.endpointMatches || [])]) {
-      const provider = name.includes('cloudflare') ? 'Cloudflare' : name.includes('akamai') ? 'Akamai' : name.includes('perimeterx') ? 'PerimeterX' : name.includes('datadome') ? 'DataDome' : null;
+      const provider =
+        name.includes('cloudflare') ? 'Cloudflare' :
+        name.includes('akamai') ? 'Akamai' :
+        name.includes('perimeterx') ? 'PerimeterX' :
+        name.includes('datadome') ? 'DataDome' :
+        name.includes('f5') ? 'F5 BIG-IP / Advanced WAF' :
+        null;
       if (provider) addEvidence(details, provider, `endpoint:${name}`, item.wallTime);
     }
   }
@@ -97,7 +124,14 @@ export function detectProtectionDetails(session) {
     addMatches(details, Array.isArray(data.signals) ? data.signals.join(' ') : '', item?.kind || 'timeline', item.wallTime);
     const classification = classifyAntiBotRecord(item);
     for (const category of classification.categories || []) {
-      const provider = ({ cloudflare: 'Cloudflare', akamai: 'Akamai', perimeterx: 'PerimeterX', datadome: 'DataDome', incapsula: 'Incapsula (Imperva)' })[category];
+      const provider = ({
+        cloudflare: 'Cloudflare',
+        akamai: 'Akamai',
+        perimeterx: 'PerimeterX',
+        datadome: 'DataDome',
+        incapsula: 'Incapsula (Imperva)',
+        f5: 'F5 BIG-IP / Advanced WAF'
+      })[category];
       if (provider) addEvidence(details, provider, `timeline:${category}`, item.wallTime);
     }
   }
