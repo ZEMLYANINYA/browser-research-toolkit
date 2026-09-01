@@ -1,0 +1,5 @@
+{
+  "fixture": "frame-aware",
+  "source": "same-origin-iframe",
+  "ok": true
+}
