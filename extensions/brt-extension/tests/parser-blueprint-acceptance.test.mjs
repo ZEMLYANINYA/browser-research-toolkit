@@ -919,3 +919,208 @@ test(
     );
   }
 );
+
+
+test(
+  'acceptance: subframe-only XHR does not redefine top-level transport',
+  () => {
+    const session = baseSession({
+      timeline: [
+        {
+          eventId: 'evt-top-nav',
+          sequence: 5,
+          wallTime: 500,
+          kind: 'hard-navigation',
+          documentId: 'doc-top',
+          frameId: 0,
+          data: {
+            isTopFrame: true,
+            transitionType: 'reload',
+            url:
+              'https://example.test/document'
+          }
+        }
+      ],
+
+      network: [
+        {
+          eventId: 'evt-child-xhr',
+          sequence: 10,
+          wallTime: 1000,
+          kind: 'network-request',
+          documentId: 'doc-child',
+          frameId: 7,
+          data: {
+            transport: 'xhr',
+            method: 'POST',
+            url:
+              'https://child.example.test/api/search',
+            body: {
+              query:
+                'CHILD_VALUE_NOT_FOR_BLUEPRINT'
+            }
+          }
+        }
+      ]
+    });
+
+    const blueprint =
+      generateParserBlueprint(session);
+
+    assert.equal(
+      blueprint.transport.counts.xhr,
+      0
+    );
+
+    assert.equal(
+      blueprint.transport.counts.hardNavigation,
+      1
+    );
+
+    assert.equal(
+      blueprint.transport.primary,
+      'hard-navigation'
+    );
+
+    assert.equal(
+      blueprint.transport.model,
+      'document-driven'
+    );
+  }
+);
+
+
+test(
+  'acceptance: canceled SPA submit does not become classic-form transport',
+  () => {
+    const session = baseSession({
+      timeline: [
+        {
+          eventId: 'evt-bootstrap',
+          sequence: 5,
+          wallTime: 500,
+          kind: 'hard-navigation',
+          documentId: 'doc-spa',
+          frameId: 0,
+          data: {
+            isTopFrame: true,
+            transitionType: 'reload',
+            url:
+              'https://example.test/search'
+          }
+        },
+
+        {
+          eventId: 'evt-submit-attempt',
+          sequence: 10,
+          wallTime: 1000,
+          kind: 'form-submit',
+          documentId: 'doc-spa',
+          frameId: 0,
+          data: {
+            trigger: 'native',
+            isTrusted: true,
+            submissionProceeded: false,
+            defaultPrevented: true,
+            action:
+              'https://example.test/search',
+            method: 'POST',
+            enctype:
+              'application/x-www-form-urlencoded',
+            form: {
+              selectorHint: 'form#search',
+              name: 'search'
+            },
+            fieldCount: 1,
+            fieldsTruncated: false,
+            fields: [
+              {
+                fieldIndex: 0,
+                name: 'query',
+                type: 'text',
+                hidden: false,
+                disabled: false,
+                required: false,
+                multiple: false,
+                checked: false,
+                hasValue: true
+              }
+            ]
+          }
+        }
+      ],
+
+      network: [
+        {
+          eventId: 'evt-spa-xhr',
+          sequence: 11,
+          wallTime: 1100,
+          kind: 'network-request',
+          documentId: 'doc-spa',
+          frameId: 0,
+          data: {
+            transport: 'xhr',
+            method: 'POST',
+            url:
+              'https://example.test/api/search',
+            body: {
+              query:
+                'VALUE_NOT_FOR_BLUEPRINT'
+            }
+          }
+        }
+      ]
+    });
+
+    const blueprint =
+      generateParserBlueprint(session);
+
+    assert.equal(
+      blueprint.transport.counts.classicForm,
+      0
+    );
+
+    assert.equal(
+      blueprint.transport.counts.xhr,
+      1
+    );
+
+    assert.equal(
+      blueprint.transport.primary,
+      'xhr'
+    );
+
+    assert.equal(
+      blueprint.transport.model,
+      'api-driven'
+    );
+
+    const submitStep =
+      blueprint.workflow.steps.find(
+        step =>
+          step.evidence?.eventId ===
+          'evt-submit-attempt'
+      );
+
+    assert.ok(submitStep);
+
+    assert.equal(
+      submitStep.submissionProceeded,
+      false
+    );
+
+    assert.equal(
+      submitStep.transport,
+      'submit-event'
+    );
+
+    assert.equal(
+      blueprint.implications.some(
+        item =>
+          item.id ===
+          'reproduce-classic-form-submission'
+      ),
+      false
+    );
+  }
+);

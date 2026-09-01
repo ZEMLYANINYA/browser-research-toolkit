@@ -86,3 +86,56 @@ test('form evidence is schema-oriented instead of copying raw field values', () 
     /value\s*:\s*(?:field|control|element)\.value\b/
   );
 });
+
+
+test(
+  'page agent records final submit cancellation state',
+  () => {
+    assert.match(
+      pageAgent,
+      /defaultPrevented/
+    );
+
+    assert.match(
+      pageAgent,
+      /submissionProceeded/
+    );
+
+    assert.match(
+      pageAgent,
+      /queueMicrotask/
+    );
+  }
+);
+
+
+test(
+  'page agent captures JS-visible cookie names without emitting values',
+  () => {
+    assert.match(
+      pageAgent,
+      /function visibleCookieNames()/
+    );
+
+    const uses =
+      pageAgent.match(
+        /cookieNames:\s*visibleCookieNames\(\)/g
+      ) || [];
+
+    /*
+     * Expected live paths:
+     * fetch request
+     * XHR request
+     * form submission evidence
+     */
+    assert.ok(
+      uses.length >= 3,
+      'cookie-name metadata must reach live workflow evidence'
+    );
+
+    assert.doesNotMatch(
+      pageAgent,
+      /(?:cookies|cookie|setCookie)\s*:\s*document\.cookie/
+    );
+  }
+);

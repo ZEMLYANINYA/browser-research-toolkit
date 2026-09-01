@@ -37,6 +37,25 @@ function sortableNumber(value) {
     : number;
 }
 
+function isTopLevelWorkflowEvidence(item) {
+  /*
+   * frameId is browser-authoritative when present.
+   *
+   * Older/imported evidence may not carry frame metadata,
+   * so missing provenance remains eligible rather than
+   * being silently discarded.
+   */
+  if (Number.isInteger(item?.frameId)) {
+    return item.frameId === 0;
+  }
+
+  if (item?.data?.isTopFrame === false) {
+    return false;
+  }
+
+  return true;
+}
+
 function evidenceRef(item, reason) {
   return {
     eventId: safeString(item?.eventId) || null,
@@ -77,6 +96,10 @@ function inferTransport(session) {
       continue;
     }
 
+    if (!isTopLevelWorkflowEvidence(item)) {
+      continue;
+    }
+
     const transport =
       safeString(item?.data?.transport).toLowerCase();
 
@@ -105,6 +128,13 @@ function inferTransport(session) {
       item?.frameId === 0;
 
     if (!isTopFrame) {
+      continue;
+    }
+
+    if (
+      item?.data?.submissionProceeded ===
+      false
+    ) {
       continue;
     }
 
@@ -169,6 +199,14 @@ function inferTransport(session) {
         if (
           item?.kind !==
           'network-request'
+        ) {
+          return false;
+        }
+
+        if (
+          !isTopLevelWorkflowEvidence(
+            item
+          )
         ) {
           return false;
         }
@@ -560,10 +598,16 @@ function buildWorkflow(session) {
             null;
 
           transport =
-            'classic-form';
+            data.submissionProceeded ===
+            false
+              ? 'submit-event'
+              : 'classic-form';
 
           reason =
-            'observed form submission';
+            data.submissionProceeded ===
+            false
+              ? 'observed canceled form submit event'
+              : 'observed form submission';
         } else if (
           item.kind ===
           'network-request'
@@ -645,6 +689,23 @@ function buildWorkflow(session) {
                   data.trigger
                 ) || null
               : null,
+
+          ...(
+            item.kind ===
+              'form-submit' &&
+            typeof
+              data.submissionProceeded ===
+              'boolean'
+              ? {
+                  submissionProceeded:
+                    data.submissionProceeded,
+
+                  defaultPrevented:
+                    data.defaultPrevented ===
+                    true
+                }
+              : {}
+          ),
 
           documentId:
             safeString(
@@ -794,6 +855,7 @@ function formIdentity(observation) {
       observation.form?.name ||
       '[anonymous-form]',
     observation.method || '',
+    observation.enctype || '',
     observation.action || ''
   ].join('|');
 }
@@ -1604,37 +1666,86 @@ function buildStateCarriers(
     }
   }
 
-  for (const item of network) {
-    const values = [
-      item?.data?.cookies,
-      item?.data?.setCookie
+  const cookieEvidenceItems = [
+    ...timeline.filter(
+      item =>
+        item?.kind ===
+        'form-submit'
+    ),
+    ...network
+  ];
+
+  for (
+    const item
+    of cookieEvidenceItems
+  ) {
+    const data =
+      item?.data &&
+      typeof item.data === 'object'
+        ? item.data
+        : {};
+
+    const sources = [
+      {
+        value: data.cookieNames,
+        visibility:
+          safeString(
+            data.cookieVisibility
+          ) || null,
+        confidence: 0.88,
+        reason:
+          'observed JS-visible cookie name metadata'
+      },
+      {
+        value: data.cookies,
+        visibility: null,
+        confidence: 0.9,
+        reason:
+          'observed cookie carrier name'
+      },
+      {
+        value: data.setCookie,
+        visibility: null,
+        confidence: 0.9,
+        reason:
+          'observed cookie carrier name'
+      }
     ];
 
-    for (const value of values) {
+    for (const source of sources) {
       for (
         const name
-        of cookieNames(value)
+        of cookieNames(source.value)
       ) {
         carriers.push({
           type: 'cookie',
           name,
+
           role:
             cookieCarrierRole(name),
+
+          visibility:
+            source.visibility,
+
           documentId:
             safeString(
               item.documentId
             ) || null,
+
           frameId:
             Number.isInteger(
               item.frameId
             )
               ? item.frameId
               : null,
-          confidence: 0.9,
+
+          confidence:
+            source.confidence,
+
           evidence: [
             evidenceRef(
               item,
-              'observed cookie carrier name'
+              source.reason
             )
           ]
         });

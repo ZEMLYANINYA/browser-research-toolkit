@@ -498,3 +498,81 @@ test(
     );
   }
 );
+
+
+test(
+  'live JS-visible cookie-name metadata becomes state carriers',
+  () => {
+    const session = baseSession({
+      network: [
+        networkEvent({
+          eventId: 'evt-live-cookie-names',
+          sequence: 60,
+          kind: 'network-request',
+          data: {
+            transport: 'xhr',
+            method: 'GET',
+            url:
+              'https://example.test/search',
+
+            cookieNames: [
+              'sessionid',
+              'BIGipServerpool_web'
+            ],
+
+            cookieVisibility:
+              'js-visible'
+          }
+        })
+      ]
+    });
+
+    const blueprint =
+      generateParserBlueprint(session);
+
+    const cookies =
+      blueprint.stateCarriers
+        .filter(
+          carrier =>
+            carrier.type === 'cookie'
+        );
+
+    assert.deepEqual(
+      cookies
+        .map(carrier => carrier.name)
+        .sort(),
+      [
+        'BIGipServerpool_web',
+        'sessionid'
+      ]
+    );
+
+    const affinity =
+      cookies.find(
+        carrier =>
+          carrier.name ===
+          'BIGipServerpool_web'
+      );
+
+    assert.ok(affinity);
+
+    assert.equal(
+      affinity.role,
+      'probable-load-balancer-affinity'
+    );
+
+    assert.equal(
+      affinity.visibility,
+      'js-visible'
+    );
+
+    assert.equal(
+      blueprint.implications.some(
+        implication =>
+          implication.id ===
+          'preserve-cookies'
+      ),
+      true
+    );
+  }
+);

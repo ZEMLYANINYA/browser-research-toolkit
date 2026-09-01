@@ -89,6 +89,60 @@
     .replace(COOKIE_HEADER_TEXT, '$1=[REDACTED]')
     .replace(SENSITIVE_BODY, '$1=[REDACTED]'), max);
 
+  function visibleCookieNames() {
+    try {
+      const raw =
+        String(document.cookie || '');
+
+      if (!raw) {
+        return [];
+      }
+
+      const seen = new Set();
+
+      for (const chunk of raw.split(';')) {
+        const trimmed = chunk.trim();
+
+        if (!trimmed) {
+          continue;
+        }
+
+        const separator =
+          trimmed.indexOf('=');
+
+        const name =
+          (
+            separator >= 0
+              ? trimmed.slice(
+                  0,
+                  separator
+                )
+              : trimmed
+          ).trim();
+
+        if (!name) {
+          continue;
+        }
+
+        /*
+         * Cookie values never leave this function.
+         * Only bounded names are retained.
+         */
+        seen.add(
+          trim(name, 160)
+        );
+
+        if (seen.size >= 200) {
+          break;
+        }
+      }
+
+      return [...seen].sort();
+    } catch {
+      return [];
+    }
+  }
+
   const sanitizeUrl = (raw) => {
     if (!raw || typeof raw !== 'string') return raw ?? '';
     try {
@@ -231,6 +285,8 @@
         transport: 'fetch',
         method,
         url: sanitizeUrl(url),
+        cookieNames: visibleCookieNames(),
+        cookieVisibility: 'js-visible',
         body: typeof body === 'string' ? sanitizeTextBody(body) : body ? `[${Object.prototype.toString.call(body)}]` : null
       });
 
@@ -304,6 +360,8 @@
           transport: 'xhr',
           method: meta.method,
           url: sanitizeUrl(meta.url),
+          cookieNames: visibleCookieNames(),
+          cookieVisibility: 'js-visible',
           headers: meta.headers,
           body: typeof body === 'string' ? sanitizeTextBody(body) : body ? `[${Object.prototype.toString.call(body)}]` : null
         });
@@ -527,6 +585,8 @@
         ).toLowerCase(),
         100
       ),
+      cookieNames: visibleCookieNames(),
+      cookieVisibility: 'js-visible',
       form: describeTarget(form),
       submitter: describeFormSubmitter(submitter, form),
       ...describeFormFields(form)
@@ -537,7 +597,8 @@
     form,
     trigger,
     submitter = null,
-    isTrusted = false
+    isTrusted = false,
+    disposition = {}
   ) {
     const data = formSubmitEvidence(
       form,
@@ -546,7 +607,17 @@
       isTrusted
     );
 
-    if (data) emit('form-submit', data);
+    if (!data) return;
+
+    emit('form-submit', {
+      ...data,
+
+      defaultPrevented:
+        disposition.defaultPrevented === true,
+
+      submissionProceeded:
+        disposition.submissionProceeded !== false
+    });
   }
 
   function patchForms() {
@@ -644,12 +715,58 @@
             state.formSubmitHints.delete(target);
           }
 
-          emitFormSubmit(
-            target,
-            hint?.trigger || 'native',
-            event.submitter || hint?.submitter || null,
-            Boolean(event.isTrusted)
-          );
+          const trigger =
+            hint?.trigger || 'native';
+
+          const submitter =
+            event.submitter ||
+            hint?.submitter ||
+            null;
+
+          /*
+           * Snapshot form structure while the submit
+           * event is being observed. Do not re-read
+           * mutable form state later in the microtask.
+           */
+          const formData =
+            formSubmitEvidence(
+              target,
+              trigger,
+              submitter,
+              Boolean(event.isTrusted)
+            );
+
+          const capturedGeneration =
+            state.generation;
+
+          if (formData) {
+            queueMicrotask(() => {
+              if (
+                !state.active ||
+                state.generation !==
+                  capturedGeneration
+              ) {
+                return;
+              }
+
+              /*
+               * By this point synchronous target/bubble
+               * handlers have had their opportunity to
+               * cancel the submit event.
+               */
+              const defaultPrevented =
+                Boolean(
+                  event.defaultPrevented
+                );
+
+              emit('form-submit', {
+                ...formData,
+                defaultPrevented,
+                submissionProceeded:
+                  !defaultPrevented
+              });
+            });
+          }
         }
       };
       document.addEventListener(type, handler, true);

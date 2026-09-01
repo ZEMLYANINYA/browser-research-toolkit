@@ -48,6 +48,8 @@ function formEvent({
   action = 'https://example.test/search',
   method = 'POST',
   trigger = 'native',
+  enctype =
+    'application/x-www-form-urlencoded',
   fields = []
 }) {
   return {
@@ -62,7 +64,7 @@ function formEvent({
       trigger,
       method,
       action,
-      enctype: 'application/x-www-form-urlencoded',
+      enctype,
       form: {
         selectorHint: 'form#search',
         role: null,
@@ -356,3 +358,63 @@ test('form observations preserve document and frame provenance', () => {
     7
   );
 });
+
+
+test(
+  'form models keep different submission encodings separate',
+  () => {
+    const session = baseSession({
+      timeline: [
+        formEvent({
+          eventId: 'evt-urlencoded',
+          sequence: 10,
+          action:
+            'https://example.test/upload',
+          method: 'POST',
+          enctype:
+            'application/x-www-form-urlencoded',
+          fields: [
+            field(0, 'payload')
+          ]
+        }),
+
+        formEvent({
+          eventId: 'evt-multipart',
+          sequence: 20,
+          action:
+            'https://example.test/upload',
+          method: 'POST',
+          enctype:
+            'multipart/form-data',
+          fields: [
+            field(0, 'payload')
+          ]
+        })
+      ]
+    });
+
+    const blueprint =
+      generateParserBlueprint(session);
+
+    assert.equal(
+      blueprint.forms.models.length,
+      2
+    );
+
+    assert.deepEqual(
+      blueprint.forms.models
+        .map(model => model.enctype)
+        .sort(),
+      [
+        'application/x-www-form-urlencoded',
+        'multipart/form-data'
+      ]
+    );
+
+    assert.deepEqual(
+      blueprint.forms.models
+        .map(model => model.observationCount),
+      [1, 1]
+    );
+  }
+);
