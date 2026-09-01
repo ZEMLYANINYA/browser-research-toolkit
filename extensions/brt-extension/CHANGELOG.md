@@ -1,5 +1,38 @@
 # Extension changelog
 
+## Unreleased
+
+### Added
+
+- Frame-aware MAIN-world capture for top-level pages and subframes.
+- Browser-controlled frame/document provenance for committed subframe navigations.
+- Per-document lightweight HTML/runtime snapshot observation metadata.
+- Frame/document observations for deduplicated external sources.
+- Tab-wide capture lifecycle command delivery with top-frame-only runtime watch commands.
+- Reproducible local frame-aware browser fixture with cross-origin iframe navigation.
+
+### Changed
+
+- External source deduplication now preserves observations from every document/frame without duplicating the fetched source body.
+- Subframe navigation is retained in documents and timeline evidence without changing canonical top-level session ownership.
+- First-party source-fetch authorization remains anchored to the top-level page even when a source is discovered inside a cross-origin iframe.
+
+### Fixed
+
+- Prevented subframe HTML/runtime snapshots from overwriting global top-level session state.
+- Prevented subframe agent status from becoming authoritative over top-level session state.
+- Prevented subframe navigation from mutating the top-level anti-bot lifecycle.
+- Prevented known cross-frame DOM/network evidence from being correlated as same-frame candidates.
+
+### Tests
+
+- Added frame-aware document and navigation ownership tests.
+- Added cross-frame correlation regressions.
+- Added source provenance and multi-frame deduplication tests.
+- Added snapshot metadata and command-routing tests.
+- Added anti-bot frame-ownership regression coverage.
+- Verified top-frame + cross-origin iframe capture and iframe document replacement in Chrome.
+
 ## 0.4.0
 
 First repository-ready release of the Manifest V3 Browser Research Toolkit extension.

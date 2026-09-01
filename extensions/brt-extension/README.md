@@ -22,6 +22,7 @@ therefore use names such as `extension-v0.4.0` rather than a bare `v0.4.0`.
 - `fetch` and `XMLHttpRequest` observation.
 - WebSocket and EventSource lifecycle/body observation.
 - DOM interaction and mutation evidence.
+- Frame-aware capture across top-level pages and subframes.
 - SPA and hard-navigation evidence.
 - Performance summaries and Deep-mode detail.
 - Runtime snapshots and explicit watched globals.
@@ -38,7 +39,7 @@ therefore use names such as `extension-v0.4.0` rather than a bare `v0.4.0`.
 1. Open `chrome://extensions` in Chrome or Chromium.
 2. Enable **Developer mode**.
 3. Choose **Load unpacked**.
-4. Select this `extension/` directory.
+4. Select the `extensions/brt-extension/` directory.
 5. Pin Browser Research Toolkit if desired.
 6. Open a normal `http://` or `https://` page and click the extension action to open the side panel.
 
@@ -78,6 +79,7 @@ unavailable, BRT records the failure and falls back to Standard behavior rather 
 
 ```text
 Page MAIN world
+(top frame + subframes)
     |
     | page-observable window.postMessage
     v
@@ -102,8 +104,8 @@ The MAIN-world transport is deliberately labeled **page-observable** in stored p
 `chrome.debugger` is labeled **extension-controlled**, and hard-navigation evidence from `chrome.webNavigation` is labeled
 **browser-controlled**. BRT does not pretend these sources have the same integrity.
 
-See [`../docs/EXTENSION_ARCHITECTURE.md`](../docs/EXTENSION_ARCHITECTURE.md) and
-[`../docs/SECURITY_MODEL.md`](../docs/SECURITY_MODEL.md) for the full model.
+See [`../../docs/extension/EXTENSION_ARCHITECTURE.md`](../../docs/extension/EXTENSION_ARCHITECTURE.md) and
+[`../../docs/extension/SECURITY_MODEL.md`](../../docs/extension/SECURITY_MODEL.md) for the full model.
 
 ## Source indexing policy
 
@@ -115,6 +117,8 @@ Version 0.4.0 uses a fail-closed external-source policy:
 - Third-party source fetching requires the explicit `thirdPartySources` opt-in in capture settings.
 - Unsupported schemes and invalid source/page URLs are rejected.
 - Source downloads are timeout-bound, rate-limited, byte-bounded, character-bounded, and redacted before storage.
+- Source records retain document/frame observations even when the same external URL is deduplicated across multiple frames.
+- First-party source-fetch policy remains anchored to the canonical top-level page URL; an iframe URL does not redefine that boundary.
 
 This is intentionally stricter than merely fetching a third-party script and discarding its body afterward.
 
@@ -125,6 +129,11 @@ positive generation, current run ID, and timestamp. The isolated bridge applies 
 check before forwarding. The service worker performs the authoritative validation again and rejects stale events whose
 `generation` or `runId` does not match the active session. For page-observable events, Chrome-provided sender URL metadata is
 used as the canonical page URL; a page-reported URL cannot redefine the first-party source-fetch boundary.
+
+Frame identity follows the same rule. MAIN-world code does not authoritatively choose its Chrome frame ID. The service worker
+uses Chrome sender/navigation metadata to canonicalize frame and document provenance. Subframe observations are retained, but
+they cannot replace top-level session ownership such as `pageUrl`, `activeDocumentId`, global HTML/runtime snapshots, or
+the top-level anti-bot lifecycle.
 
 `agent-status` is observational only. A page-originated status event cannot authoritatively start or stop the service-worker
 session. The extension-owned run state remains authoritative.
@@ -183,7 +192,7 @@ The goal is to fail visibly and boundedly rather than convert a long research se
 The extension has no runtime npm dependencies. Node is used only for repository checks.
 
 ```bash
-cd extension
+cd extensions/brt-extension
 npm run verify
 ```
 
@@ -197,10 +206,12 @@ npm run verify
 - Source-fetch policy tests.
 - Redaction regression tests.
 - DOM/network correlation boundary tests.
+- Frame-aware document, source, navigation, snapshot-ownership, and anti-bot lifecycle regression tests.
+- Reproducible local top-frame/cross-origin-iframe browser fixture under `tests/fixtures/frame-aware/`.
 
 ## Known limitations
 
-- `all_frames` is currently `false`; MAIN-world instrumentation is focused on the top frame.
+- MAIN-world instrumentation runs in top-level pages and eligible subframes; frame identity remains provenance-sensitive and is canonicalized from Chrome-controlled sender/navigation metadata.
 - Deep mode adds CDP evidence but does not make every iframe/page-world event equivalent to a browser-controlled event.
 - The MAIN-world transport is page-observable and must be treated as lower-integrity evidence.
 - First-party source classification currently means **same hostname**, not registrable-domain ownership.
@@ -236,11 +247,13 @@ In the main repository the recommended layout is:
 browser-research-toolkit/
 ├── src/                    # existing TypeScript core
 ├── tests/                  # existing core tests
-├── extension/              # this Manifest V3 extension
+├── extensions/
+│   └── brt-extension/       # this Manifest V3 extension
 ├── docs/
-│   ├── EXTENSION_ARCHITECTURE.md
-│   ├── SECURITY_MODEL.md
-│   └── EXTENSION_RELEASE_CHECKLIST.md
+│   └── extension/
+│       ├── EXTENSION_ARCHITECTURE.md
+│       ├── SECURITY_MODEL.md
+│       └── EXTENSION_RELEASE_CHECKLIST.md
 └── .github/workflows/
     ├── ci.yml
     └── extension-ci.yml
