@@ -365,3 +365,393 @@ test('subframes cannot overwrite top-level session-owned page state', () => {
     /canonical\.kind\s*===\s*['"]runtime-watch['"]\s*&&\s*canonical\.frameId\s*===\s*0/
   );
 });
+
+test('source frame context resolves iframe provenance without changing top-level page boundary', async () => {
+  const utils = await import('../src/session-utils.js');
+
+  assert.equal(
+    typeof utils.resolveSourceFrameContext,
+    'function',
+    'resolveSourceFrameContext must exist'
+  );
+
+  const session = {
+    pageUrl: 'https://top.example.test/page',
+    documents: [
+      {
+        documentId: 'top-document',
+        frameId: 0,
+        url: 'https://top.example.test/page'
+      },
+      {
+        documentId: 'child-source-document',
+        frameId: 7,
+        url: 'https://child.example.test/frame'
+      }
+    ]
+  };
+
+  const context = utils.resolveSourceFrameContext(session, {
+    documentId: 'child-source-document',
+    frameId: 7
+  });
+
+  assert.equal(context.documentId, 'child-source-document');
+  assert.equal(context.frameId, 7);
+  assert.equal(
+    context.documentUrl,
+    'https://child.example.test/frame'
+  );
+  assert.equal(context.isTopFrame, false);
+
+  // Resolving provenance must never redefine the canonical
+  // first-party boundary of the tab.
+  assert.equal(
+    session.pageUrl,
+    'https://top.example.test/page'
+  );
+});
+
+test('captured sources retain frame provenance while fetch policy stays top-level', () => {
+  const background = fs.readFileSync(
+    new URL('../src/background.js', import.meta.url),
+    'utf8'
+  );
+
+  assert.match(
+    background,
+    /resolveSourceFrameContext/,
+    'background must use resolveSourceFrameContext'
+  );
+
+  const inlineStart = background.indexOf(
+    "} else if (canonical.kind === 'source-inline') {"
+  );
+
+  const inlineEnd = background.indexOf(
+    "} else if (canonical.kind === 'source-url') {",
+    inlineStart
+  );
+
+  assert.ok(inlineStart >= 0);
+  assert.ok(inlineEnd > inlineStart);
+
+  const inlineBlock = background.slice(
+    inlineStart,
+    inlineEnd
+  );
+
+  assert.match(
+    inlineBlock,
+    /resolveSourceFrameContext\s*\(\s*session\s*,\s*canonical\s*\)/
+  );
+
+  assert.match(
+    inlineBlock,
+    /documentId\s*:\s*sourceFrame\.documentId/
+  );
+
+  assert.match(
+    inlineBlock,
+    /frameId\s*:\s*sourceFrame\.frameId/
+  );
+
+  assert.match(
+    inlineBlock,
+    /documentUrl\s*:\s*sourceFrame\.documentUrl/
+  );
+
+
+  const externalStart = background.indexOf(
+    'function indexExternalSource(tabId, payload) {'
+  );
+
+  const externalEnd = background.indexOf(
+    'async function handlePageEvent',
+    externalStart
+  );
+
+  assert.ok(externalStart >= 0);
+  assert.ok(externalEnd > externalStart);
+
+  const externalBlock = background.slice(
+    externalStart,
+    externalEnd
+  );
+
+  assert.match(
+    externalBlock,
+    /resolveSourceFrameContext\s*\(\s*session\s*,\s*payload\s*\)/
+  );
+
+  assert.match(
+    externalBlock,
+    /documentId\s*:\s*sourceFrame\.documentId/
+  );
+
+  assert.match(
+    externalBlock,
+    /frameId\s*:\s*sourceFrame\.frameId/
+  );
+
+  assert.match(
+    externalBlock,
+    /documentUrl\s*:\s*sourceFrame\.documentUrl/
+  );
+
+  // Frame provenance and fetch authorization are deliberately
+  // different concepts. External source policy remains anchored
+  // to the canonical top-level page.
+  assert.match(
+    externalBlock,
+    /pageUrl\s*:\s*session\.pageUrl/
+  );
+});
+
+
+test('same external source retains observations from multiple frames', async () => {
+  const utils = await import('../src/session-utils.js');
+
+  assert.equal(
+    typeof utils.recordSourceObservation,
+    'function',
+    'recordSourceObservation must exist'
+  );
+
+  const source = {
+    url: 'https://cdn.example.test/bundle.js'
+  };
+
+  utils.recordSourceObservation(
+    source,
+    {
+      documentId: 'top-document',
+      frameId: 0,
+      documentUrl: 'https://app.example.test/page'
+    },
+    100
+  );
+
+  utils.recordSourceObservation(
+    source,
+    {
+      documentId: 'child-document',
+      frameId: 7,
+      documentUrl: 'https://child.example.test/frame'
+    },
+    200
+  );
+
+  // Re-observing the same source from the same document/frame
+  // updates that observation instead of creating a duplicate.
+  utils.recordSourceObservation(
+    source,
+    {
+      documentId: 'child-document',
+      frameId: 7,
+      documentUrl: 'https://child.example.test/frame'
+    },
+    300
+  );
+
+  assert.equal(source.observations.length, 2);
+
+  assert.deepEqual(
+    source.observations[0],
+    {
+      documentId: 'top-document',
+      frameId: 0,
+      documentUrl: 'https://app.example.test/page',
+      firstObservedAt: 100,
+      lastObservedAt: 100,
+      count: 1
+    }
+  );
+
+  assert.deepEqual(
+    source.observations[1],
+    {
+      documentId: 'child-document',
+      frameId: 7,
+      documentUrl: 'https://child.example.test/frame',
+      firstObservedAt: 200,
+      lastObservedAt: 300,
+      count: 2
+    }
+  );
+
+  assert.equal(source.firstObservedAt, 100);
+  assert.equal(source.lastObservedAt, 300);
+});
+
+
+test('external source dedupe preserves observations across frames', () => {
+  const background = fs.readFileSync(
+    new URL('../src/background.js', import.meta.url),
+    'utf8'
+  );
+
+  assert.match(
+    background,
+    /recordSourceObservation/,
+    'background must record source observations'
+  );
+
+  assert.match(
+    background,
+    /pendingSourceObservations/,
+    'pending source fetches must retain observations'
+  );
+
+  const indexStart = background.indexOf(
+    'function indexExternalSource(tabId, payload) {'
+  );
+
+  const indexEnd = background.indexOf(
+    'async function collectExternalSource',
+    indexStart
+  );
+
+  assert.ok(indexStart >= 0);
+  assert.ok(indexEnd > indexStart);
+
+  const indexBlock = background.slice(
+    indexStart,
+    indexEnd
+  );
+
+  assert.match(
+    indexBlock,
+    /resolveSourceFrameContext\s*\(\s*session\s*,\s*payload\s*\)/
+  );
+
+  assert.match(
+    indexBlock,
+    /existingSource/
+  );
+
+  assert.match(
+    indexBlock,
+    /recordSourceObservation\s*\(\s*existingSource\s*,\s*sourceFrame/
+  );
+
+  assert.match(
+    indexBlock,
+    /pendingSourceObservations/
+  );
+
+
+  const collectStart = indexEnd;
+
+  const collectEnd = background.indexOf(
+    'async function handlePageEvent',
+    collectStart
+  );
+
+  assert.ok(collectEnd > collectStart);
+
+  const collectBlock = background.slice(
+    collectStart,
+    collectEnd
+  );
+
+  assert.match(
+    collectBlock,
+    /pendingSourceObservations/
+  );
+
+  assert.match(
+    collectBlock,
+    /recordSourceObservation/
+  );
+
+  // Fetch authorization must still remain anchored to the
+  // canonical top-level page, regardless of observing frame.
+  assert.match(
+    collectBlock,
+    /pageUrl\s*:\s*session\.pageUrl/
+  );
+});
+
+
+test('frame command routing keeps capture tab-wide and watches top-frame only', async () => {
+  const utils = await import('../src/session-utils.js');
+
+  assert.equal(
+    typeof utils.commandTargetOptions,
+    'function',
+    'commandTargetOptions must exist'
+  );
+
+  assert.equal(
+    utils.commandTargetOptions('START'),
+    undefined
+  );
+
+  assert.equal(
+    utils.commandTargetOptions('STOP'),
+    undefined
+  );
+
+  assert.equal(
+    utils.commandTargetOptions('REFRESH_SOURCES'),
+    undefined
+  );
+
+  assert.deepEqual(
+    utils.commandTargetOptions('WATCH_ADD'),
+    { frameId: 0 }
+  );
+
+  assert.deepEqual(
+    utils.commandTargetOptions('WATCH_SNAPSHOT'),
+    { frameId: 0 }
+  );
+
+  assert.equal(
+    utils.commandTargetOptions('UNKNOWN_COMMAND'),
+    undefined
+  );
+});
+
+
+test('background applies frame command routing to tabs.sendMessage', () => {
+  const background = fs.readFileSync(
+    new URL('../src/background.js', import.meta.url),
+    'utf8'
+  );
+
+  assert.match(
+    background,
+    /commandTargetOptions/,
+    'background must use commandTargetOptions'
+  );
+
+  const start = background.indexOf(
+    'async function sendCommand('
+  );
+
+  assert.ok(start >= 0);
+
+  const end = background.indexOf(
+    '\n}',
+    start
+  );
+
+  assert.ok(end > start);
+
+  const block = background.slice(
+    start,
+    end + 2
+  );
+
+  assert.match(
+    block,
+    /const\s+targetOptions\s*=\s*commandTargetOptions\s*\(\s*command\s*\)/
+  );
+
+  assert.match(
+    block,
+    /chrome\.tabs\.sendMessage\s*\(\s*tabId\s*,[\s\S]*targetOptions\s*\)/
+  );
+});

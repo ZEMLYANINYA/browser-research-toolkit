@@ -295,6 +295,186 @@ export function applyCommittedNavigation(session, details = {}) {
   };
 }
 
+export function commandTargetOptions(command) {
+  if (
+    command === 'WATCH_ADD' ||
+    command === 'WATCH_SNAPSHOT'
+  ) {
+    return { frameId: 0 };
+  }
+
+  /*
+   * No frameId means tab-wide delivery through tabs.sendMessage().
+   * Capture lifecycle commands must reach every injected frame.
+   */
+  return undefined;
+}
+
+export function recordSourceObservation(
+  source,
+  context = {},
+  observedAt = Date.now()
+) {
+  if (!source || typeof source !== 'object') {
+    return source;
+  }
+
+  source.observations =
+    Array.isArray(source.observations)
+      ? source.observations
+      : [];
+
+  const documentId =
+    typeof context.documentId === 'string' &&
+    context.documentId
+      ? context.documentId
+      : 'unknown';
+
+  const frameId =
+    Number.isInteger(context.frameId) &&
+    context.frameId >= 0
+      ? context.frameId
+      : 0;
+
+  const documentUrl =
+    typeof context.documentUrl === 'string'
+      ? context.documentUrl
+      : '';
+
+  const at =
+    Number.isFinite(observedAt)
+      ? observedAt
+      : Date.now();
+
+  /*
+   * Chrome documentId is the strongest identity when available.
+   * For legacy/unknown documents, frame + document URL prevents
+   * unrelated frame observations from collapsing together.
+   */
+  const existing = source.observations.find(item => {
+    if (
+      documentId !== 'unknown' &&
+      item.documentId !== 'unknown'
+    ) {
+      return (
+        item.documentId === documentId &&
+        item.frameId === frameId
+      );
+    }
+
+    return (
+      item.frameId === frameId &&
+      item.documentUrl === documentUrl
+    );
+  });
+
+  if (existing) {
+    existing.firstObservedAt = Math.min(
+      Number(existing.firstObservedAt) || at,
+      at
+    );
+
+    existing.lastObservedAt = Math.max(
+      Number(existing.lastObservedAt) || at,
+      at
+    );
+
+    existing.count =
+      Math.max(0, Number(existing.count) || 0) + 1;
+  } else {
+    source.observations.push({
+      documentId,
+      frameId,
+      documentUrl,
+      firstObservedAt: at,
+      lastObservedAt: at,
+      count: 1
+    });
+  }
+
+  source.firstObservedAt =
+    Number.isFinite(source.firstObservedAt)
+      ? Math.min(source.firstObservedAt, at)
+      : at;
+
+  source.lastObservedAt =
+    Number.isFinite(source.lastObservedAt)
+      ? Math.max(source.lastObservedAt, at)
+      : at;
+
+  return source;
+}
+
+export function resolveSourceFrameContext(session, context = {}) {
+  const documents =
+    Array.isArray(session?.documents)
+      ? session.documents
+      : [];
+
+  const requestedDocumentId =
+    typeof context.documentId === 'string' &&
+    context.documentId &&
+    context.documentId !== 'unknown'
+      ? context.documentId
+      : null;
+
+  const requestedFrameId =
+    Number.isInteger(context.frameId) &&
+    context.frameId >= 0
+      ? context.frameId
+      : null;
+
+  let document = null;
+
+  if (requestedDocumentId) {
+    document = documents.find(
+      item => item.documentId === requestedDocumentId
+    ) || null;
+  }
+
+  /*
+   * A frame can navigate through multiple documents, so when only
+   * frameId is available prefer the most recently recorded document
+   * for that frame.
+   */
+  if (!document && requestedFrameId !== null) {
+    document = [...documents]
+      .reverse()
+      .find(item => item.frameId === requestedFrameId) || null;
+  }
+
+  const frameId =
+    requestedFrameId ??
+    (
+      Number.isInteger(document?.frameId)
+        ? document.frameId
+        : 0
+    );
+
+  const documentId =
+    requestedDocumentId ||
+    document?.documentId ||
+    (
+      frameId === 0
+        ? session?.activeDocumentId || 'unknown'
+        : 'unknown'
+    );
+
+  const documentUrl =
+    typeof document?.url === 'string' && document.url
+      ? document.url
+      : frameId === 0
+        ? session?.pageUrl || ''
+        : '';
+
+  return {
+    documentId,
+    frameId,
+    documentUrl,
+    isTopFrame: frameId === 0
+  };
+}
+
 export function minimalEventEnvelope(item) {
   if (!item) return null;
   const data = item.data || {};
