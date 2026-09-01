@@ -146,6 +146,103 @@ function inferTransport(session) {
     );
   }
 
+  /*
+   * A browser session normally begins with a document navigation.
+   * That bootstrap load is factual evidence and remains in counts/evidence,
+   * but it does not by itself make an otherwise API-driven workflow
+   * document-driven.
+   *
+   * A hard navigation becomes architecturally relevant when:
+   * - no API transport was observed,
+   * - a classic form workflow was observed, or
+   * - navigation occurs after API activity has already begun.
+   *
+   * Missing sequence metadata is treated conservatively.
+   */
+  const hasApiTransport =
+    counts.fetch > 0 ||
+    counts.xhr > 0;
+
+  const apiSequences =
+    network
+      .filter(item => {
+        if (
+          item?.kind !==
+          'network-request'
+        ) {
+          return false;
+        }
+
+        const transport =
+          safeString(
+            item?.data?.transport
+          ).toLowerCase();
+
+        return (
+          transport === 'fetch' ||
+          transport === 'xhr'
+        );
+      })
+      .map(item =>
+        safeNumber(item?.sequence)
+      )
+      .filter(
+        sequence =>
+          sequence != null
+      );
+
+  const firstApiSequence =
+    apiSequences.length > 0
+      ? Math.min(...apiSequences)
+      : null;
+
+  let hasPostApiHardNavigation =
+    false;
+
+  if (firstApiSequence != null) {
+    for (const item of timeline) {
+      if (
+        item?.kind !==
+        'hard-navigation'
+      ) {
+        continue;
+      }
+
+      const isTopFrame =
+        item?.data?.isTopFrame === true ||
+        item?.frameId === 0;
+
+      if (!isTopFrame) {
+        continue;
+      }
+
+      const sequence =
+        safeNumber(item?.sequence);
+
+      /*
+       * Missing ordering metadata cannot safely
+       * be classified as bootstrap-only.
+       */
+      if (
+        sequence == null ||
+        sequence > firstApiSequence
+      ) {
+        hasPostApiHardNavigation =
+          true;
+        break;
+      }
+    }
+  }
+
+  const hasArchitecturalHardNavigation =
+    counts.hardNavigation > 0 &&
+    (
+      !hasApiTransport ||
+      counts.classicForm > 0 ||
+      firstApiSequence == null ||
+      hasPostApiHardNavigation
+    );
+
   const active = [];
 
   if (counts.fetch > 0) {
@@ -160,7 +257,7 @@ function inferTransport(session) {
     active.push('classic-form');
   }
 
-  if (counts.hardNavigation > 0) {
+  if (hasArchitecturalHardNavigation) {
     active.push('hard-navigation');
   }
 
@@ -197,13 +294,9 @@ function inferTransport(session) {
     return compareText(a.eventId, b.eventId);
   });
 
-  const hasApiTransport =
-    counts.fetch > 0 ||
-    counts.xhr > 0;
-
   const hasDocumentTransport =
     counts.classicForm > 0 ||
-    counts.hardNavigation > 0;
+    hasArchitecturalHardNavigation;
 
   const model =
     hasApiTransport &&

@@ -557,3 +557,365 @@ test(
     );
   }
 );
+
+
+test(
+  'acceptance: bootstrap navigation does not make an XHR workflow mixed',
+  () => {
+    const session = baseSession({
+      timeline: [
+        {
+          eventId: 'evt-bootstrap',
+          sequence: 5,
+          wallTime: 500,
+          kind: 'hard-navigation',
+          documentId: 'doc-api',
+          frameId: 0,
+          data: {
+            isTopFrame: true,
+            transitionType: 'reload',
+            url: 'https://example.test/api'
+          }
+        }
+      ],
+      network: [
+        {
+          eventId: 'evt-xhr',
+          sequence: 10,
+          wallTime: 1000,
+          kind: 'network-request',
+          documentId: 'doc-api',
+          frameId: 0,
+          data: {
+            transport: 'xhr',
+            method: 'POST',
+            url:
+              'https://example.test/api/search',
+            body: {
+              query: 'VALUE_NOT_FOR_BLUEPRINT',
+              page: 2
+            }
+          }
+        }
+      ]
+    });
+
+    const blueprint =
+      generateParserBlueprint(session);
+
+    // Counts remain factual.
+    assert.equal(
+      blueprint.transport.counts.xhr,
+      1
+    );
+
+    assert.equal(
+      blueprint.transport.counts.hardNavigation,
+      1
+    );
+
+    // Architecture ignores the bootstrap document load.
+    assert.equal(
+      blueprint.transport.primary,
+      'xhr'
+    );
+
+    assert.equal(
+      blueprint.transport.model,
+      'api-driven'
+    );
+  }
+);
+
+
+test(
+  'acceptance: Markdown exposes workflow relationship inference',
+  () => {
+    const markdown =
+      renderParserBlueprintMarkdown({
+        schemaVersion: 1,
+
+        source: {
+          sessionId: 'session-render-relation',
+          sessionSequence: 12,
+          pageUrl:
+            'https://example.test/results'
+        },
+
+        transport: {
+          primary: 'classic-form',
+          model: 'document-driven',
+          counts: {
+            fetch: 0,
+            xhr: 0,
+            classicForm: 1,
+            hardNavigation: 1
+          },
+          confidence: 0.9,
+          evidence: []
+        },
+
+        workflow: {
+          steps: [
+            {
+              stepIndex: 0,
+              kind: 'form-submit',
+              method: 'POST',
+              target:
+                'https://example.test/results',
+              endpointFamily: '/results',
+              requestBodySchema: {
+                kind: 'form',
+                fields: ['query']
+              },
+              transport: 'classic-form',
+              trigger: 'native',
+              documentId: 'doc-before',
+              frameId: 0,
+              confidence: 0.98,
+              evidence: {
+                eventId: 'evt-form',
+                sequence: 10,
+                kind: 'form-submit',
+                documentId: 'doc-before',
+                frameId: 0,
+                reason:
+                  'observed form submission'
+              }
+            },
+            {
+              stepIndex: 1,
+              kind: 'hard-navigation',
+              method: null,
+              target:
+                'https://example.test/results',
+              endpointFamily: '/results',
+              requestBodySchema: null,
+              transport: 'document',
+              trigger: null,
+              documentId: 'doc-after',
+              frameId: 0,
+              confidence: 0.98,
+              evidence: {
+                eventId: 'evt-nav',
+                sequence: 11,
+                kind: 'hard-navigation',
+                documentId: 'doc-after',
+                frameId: 0,
+                reason:
+                  'observed hard navigation'
+              },
+
+              relationshipToPrevious: {
+                type:
+                  'observed-after-form-submit',
+                previousStepIndex: 0,
+                confidence: 0.85,
+                evidence: [
+                  {
+                    eventId: 'evt-form',
+                    sequence: 10,
+                    kind: 'form-submit',
+                    documentId: 'doc-before',
+                    frameId: 0,
+                    reason:
+                      'observed form submission'
+                  },
+                  {
+                    eventId: 'evt-nav',
+                    sequence: 11,
+                    kind: 'hard-navigation',
+                    documentId: 'doc-after',
+                    frameId: 0,
+                    reason:
+                      'observed hard navigation'
+                  }
+                ]
+              }
+            }
+          ]
+        },
+
+        forms: {
+          status: 'not-observed',
+          valueComparison: 'presence-only',
+          observations: [],
+          models: []
+        },
+
+        stateCarriers: [],
+
+        signals: {
+          protection: [],
+          analytics: [],
+          infrastructure: [],
+          unknown: []
+        },
+
+        implications: [],
+        gaps: []
+      });
+
+    assert.match(
+      markdown,
+      /observed-after-form-submit/
+    );
+
+    assert.match(
+      markdown,
+      /Previous step: 0/
+    );
+
+    assert.match(
+      markdown,
+      /Relationship confidence: 0.85/
+    );
+
+    assert.match(
+      markdown,
+      /evt-form/
+    );
+
+    assert.match(
+      markdown,
+      /evt-nav/
+    );
+  }
+);
+
+test(
+  'acceptance: Markdown exposes form and carrier inference metadata',
+  () => {
+    const markdown =
+      renderParserBlueprintMarkdown({
+        schemaVersion: 1,
+
+        source: {
+          sessionId: 'session-render-form',
+          sessionSequence: 20,
+          pageUrl:
+            'https://example.test/form'
+        },
+
+        transport: {
+          primary: 'classic-form',
+          model: 'document-driven',
+          counts: {
+            fetch: 0,
+            xhr: 0,
+            classicForm: 1,
+            hardNavigation: 0
+          },
+          confidence: 0.9,
+          evidence: []
+        },
+
+        workflow: {
+          steps: []
+        },
+
+        forms: {
+          status: 'observed',
+          valueComparison: 'presence-only',
+          observations: [],
+          models: [
+            {
+              modelId: 'form-1',
+              frameId: 0,
+              selectorHint: 'form#search',
+              formName: 'search',
+              action:
+                'https://example.test/results',
+              method: 'POST',
+              enctype:
+                'application/x-www-form-urlencoded',
+              observationCount: 2,
+
+              fields: [
+                {
+                  fieldIndex: 0,
+                  observedNames: [
+                    '__VIEWSTATE_a',
+                    '__VIEWSTATE_b'
+                  ],
+                  nameStability: 'changing',
+                  stableName: null,
+                  observedTypes: ['hidden'],
+                  typeStability: 'stable',
+                  stableType: 'hidden',
+                  visibility: 'hidden',
+                  generatedName: true,
+                  role:
+                    'probable-view-state',
+                  stateScope:
+                    'probable-document',
+                  confidence: 0.94,
+                  observedIn: 2,
+                  missingFrom: 0,
+                  valuePresence: {
+                    present: 2,
+                    empty: 0,
+                    stability: 'stable'
+                  },
+                  evidence: []
+                }
+              ],
+
+              evidence: []
+            }
+          ]
+        },
+
+        stateCarriers: [
+          {
+            type: 'cookie',
+            name: 'BIGipServerpool_web',
+            role:
+              'probable-load-balancer-affinity',
+            confidence: 0.9,
+            evidence: []
+          }
+        ],
+
+        signals: {
+          protection: [],
+          analytics: [],
+          infrastructure: [],
+          unknown: []
+        },
+
+        implications: [],
+        gaps: []
+      });
+
+    assert.match(
+      markdown,
+      /Visibility:.*hidden/
+    );
+
+    assert.match(
+      markdown,
+      /Generated name:.*yes/
+    );
+
+    assert.match(
+      markdown,
+      /Role:.*probable-view-state/
+    );
+
+    assert.match(
+      markdown,
+      /State scope:.*probable-document/
+    );
+
+    assert.match(
+      markdown,
+      /Field confidence: 0.94/
+    );
+
+    assert.match(
+      markdown,
+      /probable-load-balancer-affinity/
+    );
+  }
+);

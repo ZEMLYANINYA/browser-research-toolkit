@@ -306,6 +306,41 @@ function renderWorkflow(workflow) {
       )
     );
 
+    const relationship =
+      step.relationshipToPrevious &&
+      typeof step.relationshipToPrevious ===
+        'object'
+        ? step.relationshipToPrevious
+        : null;
+
+    if (relationship) {
+      lines.push(
+        '- Relationship: ' +
+          code(
+            text(
+              relationship.type,
+              'unknown'
+            )
+          ),
+        '- Previous step: ' +
+          String(
+            number(
+              relationship.previousStepIndex
+            ) ?? 'unknown'
+          ),
+        '- Relationship confidence: ' +
+          confidence(
+            relationship.confidence
+          )
+      );
+
+      lines.push(
+        ...renderEvidence(
+          relationship.evidence
+        )
+      );
+    }
+
     lines.push('');
   }
 
@@ -486,6 +521,70 @@ function renderForms(forms) {
       );
     }
 
+    lines.push(
+      '',
+      '#### Field inference',
+      ''
+    );
+
+    for (const field of fields) {
+      const fieldIndex =
+        Number.isInteger(
+          field?.fieldIndex
+        )
+          ? field.fieldIndex
+          : '?';
+
+      const generatedName =
+        field?.generatedName === true
+          ? 'yes'
+          : field?.generatedName === false
+            ? 'no'
+            : 'unknown';
+
+      lines.push(
+        '- Field ' +
+          code(
+            String(fieldIndex)
+          ),
+        '  - Visibility: ' +
+          code(
+            text(
+              field?.visibility,
+              'unknown'
+            )
+          ),
+        '  - Generated name: ' +
+          generatedName,
+        '  - Role: ' +
+          code(
+            text(
+              field?.role,
+              'unknown'
+            )
+          ),
+        '  - State scope: ' +
+          code(
+            text(
+              field?.stateScope,
+              'unknown'
+            )
+          ),
+        '  - Field confidence: ' +
+          confidence(
+            field?.confidence
+          )
+      );
+
+      lines.push(
+        ...renderEvidence(
+          field?.evidence
+        )
+      );
+
+      lines.push('');
+    }
+
     lines.push('');
   }
 
@@ -546,6 +645,16 @@ function renderStateCarriers(carriers) {
         ) +
         ')'
     );
+
+    const carrierRole =
+      text(carrier?.role);
+
+    if (carrierRole) {
+      lines.push(
+        '  - Role: ' +
+          code(carrierRole)
+      );
+    }
 
     lines.push(
       ...renderEvidence(
