@@ -1,3 +1,5 @@
+import { classifyAntiBotRecord } from './antibot.js';
+
 function safeString(value) {
   return typeof value === 'string' ? value : '';
 }
@@ -616,6 +618,704 @@ function buildBlueprintGaps(forms) {
   return gaps;
 }
 
+const PROVIDER_BY_CATEGORY = Object.freeze({
+  cloudflare: 'Cloudflare',
+  akamai: 'Akamai',
+  perimeterx: 'PerimeterX',
+  datadome: 'DataDome',
+  incapsula: 'Incapsula',
+  f5: 'F5 BIG-IP / Advanced WAF'
+});
+
+function providerFromCategories(categories) {
+  for (const category of Array.isArray(categories) ? categories : []) {
+    const provider =
+      PROVIDER_BY_CATEGORY[
+        String(category || '').toLowerCase()
+      ];
+
+    if (provider) return provider;
+  }
+
+  return null;
+}
+
+function signalEvidenceRef(signal, reason) {
+  return {
+    signalId:
+      safeString(signal?.signalId) || null,
+    sequence:
+      Number.isFinite(Number(signal?.firstSequence))
+        ? Number(signal.firstSequence)
+        : null,
+    kind:
+      safeString(signal?.kind) || 'unknown',
+    documentId:
+      safeString(signal?.documentId) || null,
+    reason
+  };
+}
+
+function buildSignals(session) {
+  const network =
+    Array.isArray(session?.network)
+      ? session.network
+      : [];
+
+  const retained =
+    Array.isArray(session?.antiBot?.signals)
+      ? session.antiBot.signals
+      : [];
+
+  const protection = retained
+    .map(signal => {
+      const categories =
+        Array.isArray(signal?.categories)
+          ? signal.categories
+              .map(value => safeString(value))
+              .filter(Boolean)
+          : [];
+
+      return {
+        provider:
+          providerFromCategories(categories),
+
+        categories,
+
+        confidence:
+          Number.isFinite(Number(signal?.confidence))
+            ? Math.max(
+                0,
+                Math.min(
+                  1,
+                  Number(signal.confidence)
+                )
+              )
+            : 0,
+
+        endpointMatches:
+          Array.isArray(signal?.endpointMatches)
+            ? signal.endpointMatches
+                .map(value => safeString(value))
+                .filter(Boolean)
+            : [],
+
+        summary: {
+          url:
+            safeString(signal?.summary?.url) || null,
+          transport:
+            safeString(
+              signal?.summary?.transport
+            ) || null,
+          method:
+            safeString(
+              signal?.summary?.method
+            ) || null,
+          status:
+            Number.isFinite(
+              Number(signal?.summary?.status)
+            )
+              ? Number(signal.summary.status)
+              : null
+        },
+
+        evidence: [
+          signalEvidenceRef(
+            signal,
+            'retained anti-bot signal'
+          )
+        ]
+      };
+    })
+    .sort((a, b) => {
+      const aId =
+        a.evidence[0]?.signalId || '';
+
+      const bId =
+        b.evidence[0]?.signalId || '';
+
+      return aId.localeCompare(bId);
+    });
+
+  const analytics = [];
+
+  const infrastructure = [];
+
+  const unknown = [];
+
+  for (const item of network) {
+    const data =
+      item?.data && typeof item.data === 'object'
+        ? item.data
+        : {};
+
+    let classification = null;
+
+    try {
+      classification =
+        classifyAntiBotRecord(item);
+    } catch {}
+
+    const telemetry =
+      data.classification === 'analytics' ||
+      (
+        Array.isArray(
+          classification?.telemetryMatches
+        ) &&
+        classification.telemetryMatches.length > 0
+      );
+
+    if (telemetry) {
+      analytics.push({
+        classification: 'analytics',
+        transport:
+          safeString(data.transport) || null,
+        method:
+          safeString(data.method) || null,
+        target:
+          safeString(data.url) || null,
+        confidence: 0.95,
+        evidence: [
+          evidenceRef(
+            item,
+            'observed analytics or telemetry request'
+          )
+        ]
+      });
+    }
+
+    if (
+      classification &&
+      classification.isAntiBotSignal !== true
+    ) {
+      const providers =
+        (classification.evidence || [])
+          .filter(value =>
+            String(value).startsWith(
+              'provider:'
+            )
+          )
+          .map(value =>
+            String(value).slice(
+              'provider:'.length
+            )
+          )
+          .filter(Boolean);
+
+      for (const provider of providers) {
+        infrastructure.push({
+          provider,
+          confidence: 0.72,
+          evidence: [
+            evidenceRef(
+              item,
+              'provider or routing infrastructure evidence'
+            )
+          ]
+        });
+      }
+
+      const categories =
+        Array.isArray(classification.categories)
+          ? classification.categories
+              .map(value => safeString(value))
+              .filter(Boolean)
+          : [];
+
+      const weakEvidence =
+        Array.isArray(classification.evidence)
+          ? classification.evidence
+              .map(value => safeString(value))
+              .filter(Boolean)
+          : [];
+
+      if (
+        !telemetry &&
+        providers.length === 0 &&
+        categories.length > 0 &&
+        weakEvidence.length > 0
+      ) {
+        unknown.push({
+          categories,
+
+          confidence:
+            Number.isFinite(
+              Number(classification.ruleWeight)
+            )
+              ? Math.max(
+                  0,
+                  Math.min(
+                    0.49,
+                    Number(
+                      classification.ruleWeight
+                    )
+                  )
+                )
+              : 0.25,
+
+          evidence: [
+            evidenceRef(
+              item,
+              'weak signal evidence without a confirmed classification'
+            )
+          ]
+        });
+      }
+    }
+  }
+
+  analytics.sort((a, b) =>
+    String(
+      a.evidence[0]?.eventId || ''
+    ).localeCompare(
+      String(
+        b.evidence[0]?.eventId || ''
+      )
+    )
+  );
+
+  infrastructure.sort((a, b) => {
+    const providerDelta =
+      String(a.provider || '')
+        .localeCompare(
+          String(b.provider || '')
+        );
+
+    if (providerDelta !== 0) {
+      return providerDelta;
+    }
+
+    return String(
+      a.evidence[0]?.eventId || ''
+    ).localeCompare(
+      String(
+        b.evidence[0]?.eventId || ''
+      )
+    );
+  });
+
+  unknown.sort((a, b) =>
+    String(
+      a.evidence[0]?.eventId || ''
+    ).localeCompare(
+      String(
+        b.evidence[0]?.eventId || ''
+      )
+    )
+  );
+
+  return {
+    protection,
+    analytics,
+    infrastructure,
+    unknown
+  };
+}
+
+const COOKIE_ATTRIBUTE_NAMES =
+  new Set([
+    'path',
+    'domain',
+    'expires',
+    'max-age',
+    'secure',
+    'httponly',
+    'samesite',
+    'priority',
+    'partitioned'
+  ]);
+
+function cookieNames(value) {
+  const names = [];
+
+  const add = name => {
+    const normalized =
+      String(name || '').trim();
+
+    if (!normalized) return;
+
+    if (
+      COOKIE_ATTRIBUTE_NAMES.has(
+        normalized.toLowerCase()
+      )
+    ) {
+      return;
+    }
+
+    if (!names.includes(normalized)) {
+      names.push(normalized);
+    }
+  };
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (
+        item &&
+        typeof item === 'object'
+      ) {
+        add(item.name);
+        continue;
+      }
+
+      if (typeof item === 'string') {
+        for (
+          const name
+          of cookieNames(item)
+        ) {
+          add(name);
+        }
+      }
+    }
+
+    return names;
+  }
+
+  if (typeof value !== 'string') {
+    return names;
+  }
+
+  for (
+    const chunk
+    of value.split(/[;\r\n]+/)
+  ) {
+    const trimmed = chunk.trim();
+
+    if (!trimmed) continue;
+
+    const separator =
+      trimmed.indexOf('=');
+
+    if (separator < 0) {
+      add(trimmed);
+      continue;
+    }
+
+    add(
+      trimmed.slice(0, separator)
+    );
+  }
+
+  return names;
+}
+
+function carrierKey(carrier) {
+  return [
+    carrier.type || '',
+    carrier.storage || '',
+    carrier.name || '',
+    carrier.key || '',
+    carrier.documentId || '',
+    Number.isInteger(carrier.frameId)
+      ? carrier.frameId
+      : ''
+  ].join('|');
+}
+
+function buildStateCarriers(
+  session,
+  forms
+) {
+  const timeline =
+    Array.isArray(session?.timeline)
+      ? session.timeline
+      : [];
+
+  const network =
+    Array.isArray(session?.network)
+      ? session.network
+      : [];
+
+  const carriers = [];
+
+  for (const item of timeline) {
+    if (
+      item?.kind !==
+      'storage-snapshot'
+    ) {
+      continue;
+    }
+
+    const storage =
+      safeString(item?.data?.storage) ||
+      'unknown';
+
+    const keys =
+      Array.isArray(item?.data?.keys)
+        ? item.data.keys
+        : [];
+
+    for (const entry of keys) {
+      const key =
+        safeString(entry?.key);
+
+      if (!key) continue;
+
+      carriers.push({
+        type: 'storage-key',
+        storage,
+        key,
+        valueLength:
+          Number.isFinite(
+            Number(entry?.length)
+          )
+            ? Number(entry.length)
+            : null,
+        documentId:
+          safeString(
+            item.documentId
+          ) || null,
+        frameId:
+          Number.isInteger(item.frameId)
+            ? item.frameId
+            : null,
+        confidence: 0.95,
+        evidence: [
+          evidenceRef(
+            item,
+            'observed storage key metadata'
+          )
+        ]
+      });
+    }
+  }
+
+  for (
+    const observation
+    of forms?.observations || []
+  ) {
+    for (
+      const field
+      of observation.fields || []
+    ) {
+      if (!field.hidden) continue;
+
+      carriers.push({
+        type: 'hidden-form-field',
+        name: field.name || null,
+        fieldIndex:
+          Number.isInteger(
+            field.fieldIndex
+          )
+            ? field.fieldIndex
+            : null,
+        hasValue:
+          Boolean(field.hasValue),
+        documentId:
+          observation.documentId || null,
+        frameId:
+          Number.isInteger(
+            observation.frameId
+          )
+            ? observation.frameId
+            : null,
+        confidence: 0.9,
+        evidence: [
+          observation.evidence
+        ].filter(Boolean)
+      });
+    }
+  }
+
+  for (const item of network) {
+    const values = [
+      item?.data?.cookies,
+      item?.data?.setCookie
+    ];
+
+    for (const value of values) {
+      for (
+        const name
+        of cookieNames(value)
+      ) {
+        carriers.push({
+          type: 'cookie',
+          name,
+          documentId:
+            safeString(
+              item.documentId
+            ) || null,
+          frameId:
+            Number.isInteger(
+              item.frameId
+            )
+              ? item.frameId
+              : null,
+          confidence: 0.9,
+          evidence: [
+            evidenceRef(
+              item,
+              'observed cookie carrier name'
+            )
+          ]
+        });
+      }
+    }
+  }
+
+  const deduped = new Map();
+
+  for (const carrier of carriers) {
+    const key = carrierKey(carrier);
+
+    if (!deduped.has(key)) {
+      deduped.set(key, carrier);
+    }
+  }
+
+  return [...deduped.values()];
+}
+
+function uniqueEvidence(items) {
+  const result = [];
+  const seen = new Set();
+
+  for (const item of items) {
+    if (!item) continue;
+
+    const key = [
+      item.eventId || '',
+      item.signalId || '',
+      item.sequence ?? '',
+      item.kind || '',
+      item.documentId || ''
+    ].join('|');
+
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    result.push(item);
+  }
+
+  return result;
+}
+
+function buildImplications(
+  transport,
+  forms,
+  stateCarriers
+) {
+  const implications = [];
+
+  const cookieEvidence =
+    uniqueEvidence(
+      stateCarriers
+        .filter(
+          carrier =>
+            carrier.type === 'cookie'
+        )
+        .flatMap(
+          carrier =>
+            carrier.evidence || []
+        )
+    );
+
+  if (cookieEvidence.length > 0) {
+    implications.push({
+      id: 'preserve-cookies',
+      text:
+        'Preserve observed cookie state across parser workflow steps.',
+      confidence: 0.9,
+      evidence: cookieEvidence
+    });
+  }
+
+  const hiddenEvidence =
+    uniqueEvidence(
+      stateCarriers
+        .filter(
+          carrier =>
+            carrier.type ===
+            'hidden-form-field'
+        )
+        .flatMap(
+          carrier =>
+            carrier.evidence || []
+        )
+    );
+
+  if (hiddenEvidence.length > 0) {
+    implications.push({
+      id:
+        'refresh-hidden-form-state',
+      text:
+        'Refresh document-scoped hidden form state before reproducing form submissions.',
+      confidence: 0.82,
+      evidence: hiddenEvidence
+    });
+  }
+
+  const changingFields =
+    (forms?.models || [])
+      .flatMap(
+        model =>
+          model.fields || []
+      )
+      .filter(
+        field =>
+          field.nameStability ===
+          'changing'
+      );
+
+  const changingEvidence =
+    uniqueEvidence(
+      changingFields.flatMap(
+        field =>
+          field.evidence || []
+      )
+    );
+
+  if (
+    changingEvidence.length > 0
+  ) {
+    implications.push({
+      id:
+        'do-not-hard-code-generated-field-names',
+      text:
+        'Do not hard-code field names that change across observed form submissions.',
+      confidence: 0.9,
+      evidence: changingEvidence
+    });
+  }
+
+  const formEvidence =
+    uniqueEvidence(
+      [
+        ...(transport?.evidence || [])
+          .filter(item =>
+            String(
+              item?.reason || ''
+            ).includes(
+              'form submission'
+            )
+          ),
+
+        ...(forms?.observations || [])
+          .map(
+            observation =>
+              observation.evidence
+          )
+      ]
+    );
+
+  if (
+    Number(
+      transport?.counts?.classicForm
+    ) > 0 &&
+    formEvidence.length > 0
+  ) {
+    implications.push({
+      id:
+        'reproduce-classic-form-submission',
+      text:
+        'Reproduce the observed classic form submission semantics.',
+      confidence: 0.92,
+      evidence: formEvidence
+    });
+  }
+
+  return implications;
+}
+
 export function generateParserBlueprint(session = {}) {
   const safeSession =
     session && typeof session === 'object'
@@ -631,6 +1331,25 @@ export function generateParserBlueprint(session = {}) {
   const gaps =
     buildBlueprintGaps(forms);
 
+  const transport =
+    inferTransport(safeSession);
+
+  const signals =
+    buildSignals(safeSession);
+
+  const stateCarriers =
+    buildStateCarriers(
+      safeSession,
+      forms
+    );
+
+  const implications =
+    buildImplications(
+      transport,
+      forms,
+      stateCarriers
+    );
+
   return {
     schemaVersion: 1,
 
@@ -645,8 +1364,7 @@ export function generateParserBlueprint(session = {}) {
         safeString(safeSession.pageUrl)
     },
 
-    transport:
-      inferTransport(safeSession),
+    transport,
 
     /*
      * These sections are part of the stable schema now,
@@ -656,16 +1374,11 @@ export function generateParserBlueprint(session = {}) {
 
     forms,
 
-    stateCarriers: [],
+    stateCarriers,
 
-    signals: {
-      protection: [],
-      analytics: [],
-      infrastructure: [],
-      unknown: []
-    },
+    signals,
 
-    implications: [],
+    implications,
 
     gaps
   };
