@@ -3,7 +3,8 @@ import {
   ensureStorageStats, rebuildStorageStats, trackedPush, trackedReplace, removeTrackedAt, adjustTrackedBucketBytes,
   pushTimelineTracked, ensureDocument, resolveCanonicalDocumentId, minimalEventEnvelope,
   normalizeModeState, setCdpState, buildDomNetworkCorrelation, applyCommittedNavigation,
-  resolveSourceFrameContext, recordSourceObservation, commandTargetOptions
+  resolveSourceFrameContext, recordSourceObservation, commandTargetOptions,
+  recordDocumentSnapshotObservation
 } from './session-utils.js';
 import {
   classifyAntiBotRecord, createAntiBotState, ensureAntiBotState, recordAntiBotAgentStatus,
@@ -927,6 +928,19 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
         navigationDeltaMs
       });
     }
+  }
+
+  if (
+    canonical.kind === 'html-snapshot' ||
+    canonical.kind === 'runtime-snapshot'
+  ) {
+    recordDocumentSnapshotObservation(
+      session,
+      canonical,
+      Number.isFinite(canonical.wallTime)
+        ? canonical.wallTime
+        : Date.now()
+    );
   }
 
   if (canonical.kind === 'html-snapshot' && canonical.frameId === 0) {

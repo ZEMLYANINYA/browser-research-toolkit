@@ -295,6 +295,99 @@ export function applyCommittedNavigation(session, details = {}) {
   };
 }
 
+export function recordDocumentSnapshotObservation(
+  session,
+  event = {},
+  observedAt = Date.now()
+) {
+  if (!session || typeof session !== 'object') {
+    return null;
+  }
+
+  const documents =
+    Array.isArray(session.documents)
+      ? session.documents
+      : [];
+
+  const documentId =
+    typeof event.documentId === 'string' &&
+    event.documentId &&
+    event.documentId !== 'unknown'
+      ? event.documentId
+      : null;
+
+  const frameId =
+    Number.isInteger(event.frameId) &&
+    event.frameId >= 0
+      ? event.frameId
+      : null;
+
+  let document = null;
+
+  if (documentId) {
+    document =
+      documents.find(
+        item => item.documentId === documentId
+      ) || null;
+  }
+
+  if (!document && frameId !== null) {
+    document =
+      [...documents]
+        .reverse()
+        .find(item => item.frameId === frameId) ||
+      null;
+  }
+
+  if (!document) {
+    return null;
+  }
+
+  const at =
+    Number.isFinite(observedAt)
+      ? observedAt
+      : Date.now();
+
+  if (event.kind === 'html-snapshot') {
+    const html =
+      typeof event.data?.text === 'string'
+        ? event.data.text
+        : '';
+
+    document.htmlSnapshotCount =
+      Math.max(
+        0,
+        Number(document.htmlSnapshotCount) || 0
+      ) + 1;
+
+    document.htmlSnapshotObservedAt = at;
+    document.htmlChars = html.length;
+  }
+
+  if (event.kind === 'runtime-snapshot') {
+    const entries =
+      Array.isArray(event.data?.entries)
+        ? event.data.entries
+        : [];
+
+    document.runtimeSnapshotCount =
+      Math.max(
+        0,
+        Number(document.runtimeSnapshotCount) || 0
+      ) + 1;
+
+    document.runtimeSnapshotObservedAt = at;
+    document.runtimeEntries = entries.length;
+  }
+
+  document.lastObservedAt =
+    Number.isFinite(document.lastObservedAt)
+      ? Math.max(document.lastObservedAt, at)
+      : at;
+
+  return document;
+}
+
 export function commandTargetOptions(command) {
   if (
     command === 'WATCH_ADD' ||

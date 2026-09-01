@@ -755,3 +755,154 @@ test('background applies frame command routing to tabs.sendMessage', () => {
     /chrome\.tabs\.sendMessage\s*\(\s*tabId\s*,[\s\S]*targetOptions\s*\)/
   );
 });
+
+
+test('document snapshot observations retain lightweight subframe metadata', async () => {
+  const utils = await import('../src/session-utils.js');
+
+  assert.equal(
+    typeof utils.recordDocumentSnapshotObservation,
+    'function',
+    'recordDocumentSnapshotObservation must exist'
+  );
+
+  const session = {
+    pageUrl: 'https://top.example.test/page',
+    html: '<html>top-level-owned</html>',
+    runtime: [{ path: 'window.topOnly' }],
+    documents: [
+      {
+        documentId: 'top-document',
+        frameId: 0,
+        url: 'https://top.example.test/page'
+      },
+      {
+        documentId: 'child-document',
+        frameId: 7,
+        url: 'https://child.example.test/frame'
+      }
+    ]
+  };
+
+  utils.recordDocumentSnapshotObservation(
+    session,
+    {
+      kind: 'html-snapshot',
+      documentId: 'child-document',
+      frameId: 7,
+      data: {
+        text: '<html><body>child</body></html>'
+      }
+    },
+    100
+  );
+
+  utils.recordDocumentSnapshotObservation(
+    session,
+    {
+      kind: 'runtime-snapshot',
+      documentId: 'child-document',
+      frameId: 7,
+      data: {
+        entries: [
+          { path: 'window.childOne' },
+          { path: 'window.childTwo' }
+        ]
+      }
+    },
+    200
+  );
+
+  const child = session.documents.find(
+    item => item.documentId === 'child-document'
+  );
+
+  assert.equal(child.htmlSnapshotCount, 1);
+  assert.equal(child.htmlSnapshotObservedAt, 100);
+  assert.equal(
+    child.htmlChars,
+    '<html><body>child</body></html>'.length
+  );
+
+  assert.equal(child.runtimeSnapshotCount, 1);
+  assert.equal(child.runtimeSnapshotObservedAt, 200);
+  assert.equal(child.runtimeEntries, 2);
+  assert.equal(child.lastObservedAt, 200);
+
+  // Lightweight frame metadata must not replace the canonical
+  // top-level session-owned snapshot state.
+  assert.equal(
+    session.html,
+    '<html>top-level-owned</html>'
+  );
+
+  assert.deepEqual(
+    session.runtime,
+    [{ path: 'window.topOnly' }]
+  );
+});
+
+
+test('background records snapshot metadata for every frame before top-level ownership guards', () => {
+  const background = fs.readFileSync(
+    new URL('../src/background.js', import.meta.url),
+    'utf8'
+  );
+
+  assert.match(
+    background,
+    /recordDocumentSnapshotObservation/,
+    'background must use recordDocumentSnapshotObservation'
+  );
+
+  const handleStart = background.indexOf(
+    'async function handlePageEvent'
+  );
+
+  assert.ok(
+    handleStart >= 0,
+    'handlePageEvent must exist'
+  );
+
+  const handleBlock = background.slice(handleStart);
+
+  const observationMatch = handleBlock.match(
+    /recordDocumentSnapshotObservation\s*\(\s*session\s*,\s*canonical\b/
+  );
+
+  const observationCall =
+    observationMatch?.index ?? -1;
+
+  const htmlGuard = handleBlock.indexOf(
+    "canonical.kind === 'html-snapshot' && canonical.frameId === 0"
+  );
+
+  const runtimeGuard = handleBlock.indexOf(
+    "canonical.kind === 'runtime-snapshot' && canonical.frameId === 0"
+  );
+
+  assert.ok(
+    observationCall >= 0,
+    'snapshot observation helper must be called from handlePageEvent'
+  );
+
+  assert.ok(
+    htmlGuard >= 0,
+    'top-frame HTML ownership guard must remain'
+  );
+
+  assert.ok(
+    runtimeGuard >= 0,
+    'top-frame runtime ownership guard must remain'
+  );
+
+  assert.ok(
+    observationCall < htmlGuard,
+    'HTML snapshot metadata must be recorded before the top-frame guard'
+  );
+
+  assert.ok(
+    observationCall < runtimeGuard,
+    'runtime snapshot metadata must be recorded before the top-frame guard'
+  );
+});
