@@ -14,6 +14,8 @@ import { analyzeAntiBot } from './antibot-analyzer.js';
 import { createRunId, validateRuntimeMessage } from './protocol.js';
 import { classifySourceFetchPolicy } from './source-policy.js';
 import { TaskRunner, TaskError } from './task-runner.js';
+import { generateParserBlueprint } from './parser-blueprint.js';
+import { renderParserBlueprintMarkdown } from './parser-blueprint-markdown.js';
 
 const sessions = new Map();
 const cdpTabs = new Set();
@@ -1316,6 +1318,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tab = await activeTab();
       if (!tab?.id) return sendResponse({ session: null });
       sendResponse({ session: await loadSession(tab.id) });
+      return;
+    }
+
+    if (message?.type === 'BRT_GET_PARSER_BLUEPRINT') {
+      const tab = await activeTab();
+
+      if (!tab?.id) {
+        sendResponse({ blueprint: null, markdown: '' });
+        return;
+      }
+
+      const session = await loadSession(tab.id);
+      const blueprint = generateParserBlueprint(session);
+      const markdown =
+        renderParserBlueprintMarkdown(blueprint);
+
+      sendResponse({
+        blueprint,
+        markdown
+      });
       return;
     }
 
