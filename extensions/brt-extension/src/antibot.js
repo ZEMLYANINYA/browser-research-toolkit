@@ -8,7 +8,7 @@ export const ANTIBOT_RULES = Object.freeze([
   { id: 'analytics', pattern: /\b(?:analytics|telemetry|pixel|gtag|beacon|doubleclick|pagead|google-analytics|facebook-pixel|hotjar|clarity)\b/i, weight: 0.20, strong: false },
   { id: 'cloudflare', pattern: /\b(?:cloudflare|cf[\s_-]?(?:turnstile|challenge|browser|ray|cookie))\b/i, weight: 0.88, strong: true },
   { id: 'akamai', pattern: /\b(?:akamai|akamaized|akamai(?:cdn|bot|manager)|x-akamai-transformed)\b/i, weight: 0.85, strong: true },
-  { id: 'perimeterx', pattern: /\b(?:perimeterx|px[\s_-]?(?:challenge|token|cookie)|px[0-9]+)\b/i, weight: 0.85, strong: true },
+  { id: 'perimeterx', pattern: /\b(?:perimeterx|px[\s_-]?(?:challenge|token|cookie))\b/i, weight: 0.85, strong: true },
   { id: 'datadome', pattern: /\b(?:datadome|dd[\s_-]?(?:challenge|cookie|token)|datadome-captcha)\b/i, weight: 0.83, strong: true }
 ]);
 

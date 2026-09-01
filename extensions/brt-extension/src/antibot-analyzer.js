@@ -18,7 +18,7 @@ const MAX_ENDPOINTS = 200;
 const PROTECTION_SIGNATURES = Object.freeze({
   Cloudflare: [/cloudflare/i, /\/cdn-cgi\//i, /challenges\.cloudflare\.com/i, /cf-chl/i],
   Akamai: [/akamai/i, /akamaized/i, /akamaiedge\.net/i, /\/akamai\/botmanager\//i],
-  PerimeterX: [/perimeterx/i, /px-captcha/i, /px[0-9]+/i],
+  PerimeterX: [/perimeterx/i, /px-captcha/i],
   DataDome: [/datadome/i, /datadome\.co/i],
   'Incapsula (Imperva)': [/incapsula/i, /imperva/i, /incapsula\.net/i],
   Fastly: [/fastly\.net/i],

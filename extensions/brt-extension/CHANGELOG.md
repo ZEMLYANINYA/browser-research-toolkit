@@ -19,6 +19,7 @@
 
 ### Fixed
 
+- Prevented arbitrary opaque/free-text `PxN` substrings from being treated as PerimeterX evidence while preserving contextual cookie/header/endpoint detection.
 - Prevented subframe HTML/runtime snapshots from overwriting global top-level session state.
 - Prevented subframe agent status from becoming authoritative over top-level session state.
 - Prevented subframe navigation from mutating the top-level anti-bot lifecycle.
@@ -26,6 +27,7 @@
 
 ### Tests
 
+- Added PerimeterX regressions for opaque `Px3` text and explicit cookie/header/URL evidence.
 - Added frame-aware document and navigation ownership tests.
 - Added cross-frame correlation regressions.
 - Added source provenance and multi-frame deduplication tests.
