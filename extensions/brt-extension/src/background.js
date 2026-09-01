@@ -14,6 +14,8 @@ import { analyzeAntiBot } from './antibot-analyzer.js';
 import { createRunId, validateRuntimeMessage } from './protocol.js';
 import { classifySourceFetchPolicy } from './source-policy.js';
 import { TaskRunner, TaskError } from './task-runner.js';
+import { generateParserBlueprint } from './parser-blueprint.js';
+import { renderParserBlueprintMarkdown } from './parser-blueprint-markdown.js';
 
 const sessions = new Map();
 const cdpTabs = new Set();
@@ -476,6 +478,7 @@ function timelineLabel(payload) {
     case 'network-response': return `${d.transport || 'net'} response ${d.status ?? ''} ${d.url || ''}`;
     case 'network-body': return `body ${d.url || ''}`;
     case 'dom-event': return `${d.type || 'event'} ${d.target?.selectorHint || ''}`;
+    case 'form-submit': return `${d.method || 'GET'} form ${d.action || ''} · ${d.trigger || 'native'}`;
     case 'navigation': return `${d.type || 'navigation'} ${d.to || ''}`;
     case 'source-url': return `script ${d.url || ''}`;
     case 'source-inline': return d.label || 'inline script';
@@ -1315,6 +1318,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tab = await activeTab();
       if (!tab?.id) return sendResponse({ session: null });
       sendResponse({ session: await loadSession(tab.id) });
+      return;
+    }
+
+    if (message?.type === 'BRT_GET_PARSER_BLUEPRINT') {
+      const tab = await activeTab();
+
+      if (!tab?.id) {
+        sendResponse({ blueprint: null, markdown: '' });
+        return;
+      }
+
+      const session = await loadSession(tab.id);
+      const blueprint = generateParserBlueprint(session);
+      const markdown =
+        renderParserBlueprintMarkdown(blueprint);
+
+      sendResponse({
+        blueprint,
+        markdown
+      });
       return;
     }
 

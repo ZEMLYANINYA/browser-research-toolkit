@@ -12,6 +12,9 @@ import {
 const $ = (id) => document.getElementById(id);
 let currentSession = null;
 let currentDiagnostics = { correlations: [], diagnostics: [], api: [] };
+let currentBlueprint = null;
+let currentBlueprintMarkdown = '';
+let currentBlueprintSessionId = null;
 
 async function call(message) {
   const response = await chrome.runtime.sendMessage(message);
@@ -348,9 +351,194 @@ function renderOverview(session) {
   renderStats(session); renderActivityChart(session); renderHealth(session); renderProvenance(session); renderNetworkPulse(session); renderRecentEvidence(session);
 }
 
+function downloadArtifact(content, type, filename) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+
+  a.href = url;
+  a.download = filename;
+  a.click();
+
+  setTimeout(
+    () => URL.revokeObjectURL(url),
+    1000
+  );
+}
+
+function resetBlueprintView() {
+  currentBlueprint = null;
+  currentBlueprintMarkdown = '';
+  currentBlueprintSessionId = null;
+
+  const output = $('blueprintOutput');
+  const meta = $('blueprintMeta');
+
+  if (output) {
+    output.textContent =
+      'Generate a Parser Blueprint to inspect deterministic transport, workflow, forms, state carriers, signals and parser implications.';
+  }
+
+  if (meta) {
+    meta.textContent =
+      'Blueprint has not been generated for this session.';
+  }
+}
+
+async function refreshParserBlueprint() {
+  const response = await call({
+    type: 'BRT_GET_PARSER_BLUEPRINT'
+  });
+
+  currentBlueprint =
+    response?.blueprint || null;
+
+  currentBlueprintMarkdown =
+    typeof response?.markdown === 'string'
+      ? response.markdown
+      : '';
+
+  currentBlueprintSessionId =
+    currentSession?.sessionId ||
+    currentBlueprint?.source?.sessionId ||
+    null;
+
+  const output = $('blueprintOutput');
+  const meta = $('blueprintMeta');
+
+  if (!currentBlueprint) {
+    if (output) {
+      output.textContent =
+        'No active session evidence is available.';
+    }
+
+    if (meta) {
+      meta.textContent =
+        'No Parser Blueprint available.';
+    }
+
+    return null;
+  }
+
+  if (output) {
+    output.textContent =
+      currentBlueprintMarkdown ||
+      JSON.stringify(
+        currentBlueprint,
+        null,
+        2
+      );
+  }
+
+  if (meta) {
+    const sequence =
+      currentBlueprint?.source?.sessionSequence;
+
+    meta.textContent =
+      'Derived from session ' +
+      String(currentBlueprint?.source?.sessionId || 'unknown') +
+      ' · sequence ' +
+      String(sequence ?? 'unknown') +
+      ' · schema ' +
+      String(currentBlueprint?.schemaVersion ?? 'unknown');
+  }
+
+  return currentBlueprint;
+}
+
+function blueprintMatchesCurrentSession() {
+  if (
+    !currentBlueprint ||
+    !currentSession
+  ) {
+    return false;
+  }
+
+  const blueprintSessionId =
+    currentBlueprint?.source?.sessionId;
+
+  const blueprintSequence =
+    Number(
+      currentBlueprint?.source?.sessionSequence
+    );
+
+  const sessionSequence =
+    Number(currentSession?.sequence);
+
+  return (
+    blueprintSessionId ===
+      currentSession?.sessionId &&
+    Number.isFinite(blueprintSequence) &&
+    Number.isFinite(sessionSequence) &&
+    blueprintSequence === sessionSequence
+  );
+}
+
+async function exportBlueprintJson() {
+  if (!blueprintMatchesCurrentSession()) {
+    await refreshParserBlueprint();
+  }
+
+  if (!currentBlueprint) return;
+
+  const stamp =
+    new Date()
+      .toISOString()
+      .replace(/[:.]/g, '-');
+
+  downloadArtifact(
+    JSON.stringify(
+      currentBlueprint,
+      null,
+      2
+    ),
+    'application/json',
+    `brt-parser-blueprint-${stamp}.json`
+  );
+}
+
+async function exportBlueprintMarkdown() {
+  if (!blueprintMatchesCurrentSession()) {
+    await refreshParserBlueprint();
+  }
+
+  if (!currentBlueprint) return;
+
+  const stamp =
+    new Date()
+      .toISOString()
+      .replace(/[:.]/g, '-');
+
+  downloadArtifact(
+    currentBlueprintMarkdown,
+    'text/markdown;charset=utf-8',
+    `brt-parser-blueprint-${stamp}.md`
+  );
+}
+
 async function refresh() {
   const [tabRes, sessionRes] = await Promise.all([call({ type:'BRT_GET_ACTIVE_TAB' }), call({ type:'BRT_GET_SESSION' })]);
-  const tab = tabRes?.tab; currentSession = sessionRes?.session || null;
+  const tab = tabRes?.tab;
+  const previousSessionId =
+    currentSession?.sessionId || null;
+
+  currentSession =
+    sessionRes?.session || null;
+
+  if (
+    currentBlueprintSessionId &&
+    currentBlueprintSessionId !==
+      currentSession?.sessionId
+  ) {
+    resetBlueprintView();
+  } else if (
+    previousSessionId &&
+    previousSessionId !==
+      currentSession?.sessionId &&
+    currentBlueprint
+  ) {
+    resetBlueprintView();
+  }
   $('pageInfo').textContent = currentSession?.pageUrl ? `Captured: ${compactUrl(currentSession.pageUrl)}` : tab ? `Active: ${tab.title || '(untitled)'} · ${compactUrl(tab.url || '')}` : 'No active page';
   setStatus(Boolean(currentSession?.running), currentSession);
   $('sessionClock').textContent = compactDuration(sessionDurationMs(currentSession));
@@ -383,6 +571,45 @@ $('stopBtn').addEventListener('click', async () => { await call({ type:'BRT_STOP
 $('clearBtn').addEventListener('click', async () => { await call({ type:'BRT_CLEAR' }); await refresh(); });
 $('refreshBtn').addEventListener('click', async () => { await call({ type:'BRT_REFRESH_SOURCES' }); setTimeout(refresh,500); });
 $('exportBtn').addEventListener('click', exportCurrent);
+
+$('blueprintRefreshBtn').addEventListener(
+  'click',
+  async () => {
+    try {
+      await refreshParserBlueprint();
+    } catch (error) {
+      $('blueprintMeta').textContent =
+        'Blueprint generation failed: ' +
+        String(error?.message || error);
+    }
+  }
+);
+
+$('blueprintJsonBtn').addEventListener(
+  'click',
+  async () => {
+    try {
+      await exportBlueprintJson();
+    } catch (error) {
+      $('blueprintMeta').textContent =
+        'Blueprint JSON export failed: ' +
+        String(error?.message || error);
+    }
+  }
+);
+
+$('blueprintMarkdownBtn').addEventListener(
+  'click',
+  async () => {
+    try {
+      await exportBlueprintMarkdown();
+    } catch (error) {
+      $('blueprintMeta').textContent =
+        'Blueprint Markdown export failed: ' +
+        String(error?.message || error);
+    }
+  }
+);
 $('markBtn').addEventListener('click', async () => { const text=$('markerText').value.trim(); if(text){ await call({ type:'BRT_MARK', text }); $('markerText').value=''; await refresh(); } });
 $('watchBtn').addEventListener('click', async () => { const path=$('watchPath').value.trim(); if(path){ await call({ type:'BRT_WATCH_ADD', path }); $('watchPath').value=''; await refresh(); } });
 $('importBtn').addEventListener('click', () => $('importFile').click());

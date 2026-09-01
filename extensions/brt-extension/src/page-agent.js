@@ -12,6 +12,7 @@
     maxRuntimeEntries: 4000,
     maxResponseBytes: 160_000,
     maxStructuredBodyChars: 120_000,
+    maxFormFields: 500,
     antiBotDomFlushMs: 400,
     antiBotTimerSampleRate: 0.02
   };
@@ -44,6 +45,7 @@
     captureMode: 'standard',
     captureSettings: { antibot: false, timers: false, websocket: true, sse: true },
     xhrMeta: new WeakMap(),
+    formSubmitHints: new WeakMap(),
     listeners: [],
     watches: new Set()
   };
@@ -86,6 +88,60 @@
     .replace(AUTH_HEADER_TEXT, '$1=[REDACTED]')
     .replace(COOKIE_HEADER_TEXT, '$1=[REDACTED]')
     .replace(SENSITIVE_BODY, '$1=[REDACTED]'), max);
+
+  function visibleCookieNames() {
+    try {
+      const raw =
+        String(document.cookie || '');
+
+      if (!raw) {
+        return [];
+      }
+
+      const seen = new Set();
+
+      for (const chunk of raw.split(';')) {
+        const trimmed = chunk.trim();
+
+        if (!trimmed) {
+          continue;
+        }
+
+        const separator =
+          trimmed.indexOf('=');
+
+        const name =
+          (
+            separator >= 0
+              ? trimmed.slice(
+                  0,
+                  separator
+                )
+              : trimmed
+          ).trim();
+
+        if (!name) {
+          continue;
+        }
+
+        /*
+         * Cookie values never leave this function.
+         * Only bounded names are retained.
+         */
+        seen.add(
+          trim(name, 160)
+        );
+
+        if (seen.size >= 200) {
+          break;
+        }
+      }
+
+      return [...seen].sort();
+    } catch {
+      return [];
+    }
+  }
 
   const sanitizeUrl = (raw) => {
     if (!raw || typeof raw !== 'string') return raw ?? '';
@@ -229,6 +285,8 @@
         transport: 'fetch',
         method,
         url: sanitizeUrl(url),
+        cookieNames: visibleCookieNames(),
+        cookieVisibility: 'js-visible',
         body: typeof body === 'string' ? sanitizeTextBody(body) : body ? `[${Object.prototype.toString.call(body)}]` : null
       });
 
@@ -302,6 +360,8 @@
           transport: 'xhr',
           method: meta.method,
           url: sanitizeUrl(meta.url),
+          cookieNames: visibleCookieNames(),
+          cookieVisibility: 'js-visible',
           headers: meta.headers,
           body: typeof body === 'string' ? sanitizeTextBody(body) : body ? `[${Object.prototype.toString.call(body)}]` : null
         });
@@ -383,6 +443,253 @@
     state.listeners.push(['popstate', onPop, true], ['hashchange', onHash, true]);
   }
 
+
+  function describeFormField(field, fieldIndex) {
+    const tag = String(field?.tagName || '').toLowerCase();
+
+    let type = tag || 'unknown';
+    try {
+      type = String(
+        field?.getAttribute?.('type') ||
+        field?.type ||
+        tag ||
+        'unknown'
+      ).toLowerCase();
+    } catch {}
+
+    let name = '';
+    try {
+      name = String(
+        field?.getAttribute?.('name') ||
+        field?.name ||
+        ''
+      );
+    } catch {}
+
+    let hasValue = false;
+
+    try {
+      if (type === 'checkbox' || type === 'radio') {
+        hasValue = Boolean(field.checked);
+      } else if (type === 'file') {
+        hasValue = Boolean(field.files?.length);
+      } else if (
+        typeof HTMLSelectElement !== 'undefined' &&
+        field instanceof HTMLSelectElement &&
+        field.multiple
+      ) {
+        hasValue = Boolean(field.selectedOptions?.length);
+      } else {
+        hasValue =
+          typeof field.value === 'string'
+            ? field.value.length > 0
+            : field.value != null;
+      }
+    } catch {}
+
+    return {
+      fieldIndex,
+      name: name ? redactSensitiveText(name, 160) : null,
+      type: trim(type, 80),
+      hidden: type === 'hidden' || Boolean(field?.hidden),
+      disabled: Boolean(field?.disabled),
+      required: Boolean(field?.required),
+      multiple: Boolean(field?.multiple),
+      checked: Boolean(field?.checked),
+      hasValue
+    };
+  }
+
+  function describeFormFields(form) {
+    let controls = [];
+
+    try {
+      controls = Array.from(form?.elements || []);
+    } catch {}
+
+    return {
+      fieldCount: controls.length,
+      fieldsTruncated: controls.length > LIMITS.maxFormFields,
+      fields: controls
+        .slice(0, LIMITS.maxFormFields)
+        .map((field, fieldIndex) =>
+          describeFormField(field, fieldIndex)
+        )
+    };
+  }
+
+  function describeFormSubmitter(submitter, form) {
+    if (!(submitter instanceof Element)) return null;
+
+    let fieldIndex = null;
+
+    try {
+      const controls = Array.from(form?.elements || []);
+      const index = controls.indexOf(submitter);
+      if (index >= 0) fieldIndex = index;
+    } catch {}
+
+    return {
+      fieldIndex,
+      ...describeTarget(submitter)
+    };
+  }
+
+  function formSubmitEvidence(
+    form,
+    trigger,
+    submitter = null,
+    isTrusted = false
+  ) {
+    if (!(form instanceof HTMLFormElement)) return null;
+
+    let action = '';
+    let method = 'GET';
+    let enctype = 'application/x-www-form-urlencoded';
+
+    try {
+      action =
+        submitter?.getAttribute?.('formaction') ||
+        form.getAttribute?.('action') ||
+        form.action ||
+        location.href;
+    } catch {
+      action = location.href;
+    }
+
+    try {
+      method =
+        submitter?.getAttribute?.('formmethod') ||
+        form.getAttribute?.('method') ||
+        form.method ||
+        'GET';
+    } catch {}
+
+    try {
+      enctype =
+        submitter?.getAttribute?.('formenctype') ||
+        form.getAttribute?.('enctype') ||
+        form.enctype ||
+        'application/x-www-form-urlencoded';
+    } catch {}
+
+    return {
+      trigger,
+      isTrusted: Boolean(isTrusted),
+      action: sanitizeUrl(action || location.href),
+      method: trim(String(method || 'GET').toUpperCase(), 20),
+      enctype: trim(
+        String(
+          enctype ||
+          'application/x-www-form-urlencoded'
+        ).toLowerCase(),
+        100
+      ),
+      cookieNames: visibleCookieNames(),
+      cookieVisibility: 'js-visible',
+      form: describeTarget(form),
+      submitter: describeFormSubmitter(submitter, form),
+      ...describeFormFields(form)
+    };
+  }
+
+  function emitFormSubmit(
+    form,
+    trigger,
+    submitter = null,
+    isTrusted = false,
+    disposition = {}
+  ) {
+    const data = formSubmitEvidence(
+      form,
+      trigger,
+      submitter,
+      isTrusted
+    );
+
+    if (!data) return;
+
+    emit('form-submit', {
+      ...data,
+
+      defaultPrevented:
+        disposition.defaultPrevented === true,
+
+      submissionProceeded:
+        disposition.submissionProceeded !== false
+    });
+  }
+
+  function patchForms() {
+    if (typeof HTMLFormElement === 'undefined') return;
+
+    const proto = HTMLFormElement.prototype;
+
+    if (
+      !state.originals.formSubmit &&
+      typeof proto.submit === 'function'
+    ) {
+      const originalSubmit = proto.submit;
+
+      state.originals.formSubmit = originalSubmit;
+
+      proto.submit = function() {
+        if (state.active) {
+          emitFormSubmit(this, 'submit', null, false);
+        }
+
+        return Reflect.apply(
+          originalSubmit,
+          this,
+          arguments
+        );
+      };
+
+      state.wrappers.formSubmit = proto.submit;
+    }
+
+    if (
+      !state.originals.formRequestSubmit &&
+      typeof proto.requestSubmit === 'function'
+    ) {
+      const originalRequestSubmit = proto.requestSubmit;
+
+      state.originals.formRequestSubmit =
+        originalRequestSubmit;
+
+      proto.requestSubmit = function(submitter) {
+        if (!state.active) {
+          return Reflect.apply(
+            originalRequestSubmit,
+            this,
+            arguments
+          );
+        }
+
+        state.formSubmitHints.set(this, {
+          trigger: 'requestSubmit',
+          submitter:
+            submitter instanceof Element
+              ? submitter
+              : null
+        });
+
+        try {
+          return Reflect.apply(
+            originalRequestSubmit,
+            this,
+            arguments
+          );
+        } finally {
+          state.formSubmitHints.delete(this);
+        }
+      };
+
+      state.wrappers.formRequestSubmit =
+        proto.requestSubmit;
+    }
+  }
+
   function installDomEvents() {
     const types = ['click', 'submit', 'keydown', 'input', 'change'];
     for (const type of types) {
@@ -396,6 +703,71 @@
         };
         if (type === 'keydown') data.key = ['Enter', 'Escape', 'Tab', ' ', 'ArrowUp', 'ArrowDown'].includes(event.key) ? event.key : '[other]';
         emit('dom-event', data);
+
+        if (
+          type === 'submit' &&
+          target instanceof HTMLFormElement
+        ) {
+          const hint =
+            state.formSubmitHints.get(target);
+
+          if (hint) {
+            state.formSubmitHints.delete(target);
+          }
+
+          const trigger =
+            hint?.trigger || 'native';
+
+          const submitter =
+            event.submitter ||
+            hint?.submitter ||
+            null;
+
+          /*
+           * Snapshot form structure while the submit
+           * event is being observed. Do not re-read
+           * mutable form state later in the microtask.
+           */
+          const formData =
+            formSubmitEvidence(
+              target,
+              trigger,
+              submitter,
+              Boolean(event.isTrusted)
+            );
+
+          const capturedGeneration =
+            state.generation;
+
+          if (formData) {
+            queueMicrotask(() => {
+              if (
+                !state.active ||
+                state.generation !==
+                  capturedGeneration
+              ) {
+                return;
+              }
+
+              /*
+               * By this point synchronous target/bubble
+               * handlers have had their opportunity to
+               * cancel the submit event.
+               */
+              const defaultPrevented =
+                Boolean(
+                  event.defaultPrevented
+                );
+
+              emit('form-submit', {
+                ...formData,
+                defaultPrevented,
+                submissionProceeded:
+                  !defaultPrevented
+              });
+            });
+          }
+        }
       };
       document.addEventListener(type, handler, true);
       state.listeners.push([type, handler, true, document]);
@@ -801,6 +1173,35 @@
       if (state.originals.xhrSend && proto.send === state.wrappers.xhrSend) proto.send = state.originals.xhrSend; else if (state.originals.xhrSend) emit('diagnostic', { kind: 'restore-skipped-external-modification', target: 'xhr.send' });
       if (state.originals.xhrSetRequestHeader && proto.setRequestHeader === state.wrappers.xhrSetRequestHeader) proto.setRequestHeader = state.originals.xhrSetRequestHeader;
     } catch {}
+    try {
+      const proto = HTMLFormElement.prototype;
+
+      if (
+        state.originals.formSubmit &&
+        proto.submit === state.wrappers.formSubmit
+      ) {
+        proto.submit = state.originals.formSubmit;
+      } else if (state.originals.formSubmit) {
+        emit('diagnostic', {
+          kind: 'restore-skipped-external-modification',
+          target: 'HTMLFormElement.submit'
+        });
+      }
+
+      if (
+        state.originals.formRequestSubmit &&
+        proto.requestSubmit ===
+          state.wrappers.formRequestSubmit
+      ) {
+        proto.requestSubmit =
+          state.originals.formRequestSubmit;
+      } else if (state.originals.formRequestSubmit) {
+        emit('diagnostic', {
+          kind: 'restore-skipped-external-modification',
+          target: 'HTMLFormElement.requestSubmit'
+        });
+      }
+    } catch {}
     try { if (state.originals.pushState && history.pushState === state.wrappers.pushState) history.pushState = state.originals.pushState; else if (state.originals.pushState) emit('diagnostic', { kind: 'restore-skipped-external-modification', target: 'history.pushState' }); } catch {}
     try { if (state.originals.replaceState && history.replaceState === state.wrappers.replaceState) history.replaceState = state.originals.replaceState; } catch {}
     for (const name of ['setTimeout', 'setInterval', 'sendBeacon', 'WebSocket', 'EventSource']) {
@@ -811,6 +1212,7 @@
     }
     for (const observer of state.observers || []) { try { observer.disconnect(); } catch {} }
     state.observers = [];
+    state.formSubmitHints = new WeakMap();
     state.originals = {};
     state.wrappers = {};
     state.generation += 1;
@@ -827,6 +1229,7 @@
     patchFetch();
     patchXhr();
     patchHistory();
+    patchForms();
     installDomEvents();
     installSourceObserver();
     installExtendedSensors();

@@ -13,6 +13,8 @@ Use this checklist for the `extension-*` release line.
 - [ ] `agent-status` remains observational rather than authoritative.
 - [ ] No unbounded collection or queue was introduced.
 - [ ] New background tasks are cancellable and timeout-bound.
+- [ ] Parser Blueprint remains derived/on-demand and does not alter the persisted raw session schema.
+- [ ] Parser Blueprint canonical inference remains deterministic across supported Node/browser environments.
 
 ## Privacy and data handling
 
@@ -22,6 +24,7 @@ Use this checklist for the `extension-*` release line.
 - [ ] Any new source/network action has a documented pre-request policy.
 - [ ] Third-party source requests remain opt-in.
 - [ ] No remote telemetry or remote code loading was added.
+- [ ] Parser Blueprint exports contain schema/provenance metadata rather than raw request/form secret values.
 
 ## Permissions
 
@@ -42,6 +45,9 @@ Use this checklist for the `extension-*` release line.
 - [ ] Verify third-party sources are metadata-only by default and no background source request is made.
 - [ ] Verify session persists across side-panel close/reopen.
 - [ ] Verify export/import on a non-sensitive test session.
+- [ ] Generate Parser Blueprint from a non-sensitive session and inspect the side-panel output.
+- [ ] Export Parser Blueprint as JSON and Markdown.
+- [ ] Advance the same session and confirm Blueprint export refreshes the stale derivation.
 - [ ] Stop capture and verify patched APIs are restored.
 
 ## Long-session smoke test

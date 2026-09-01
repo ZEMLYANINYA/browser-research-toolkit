@@ -31,6 +31,9 @@ therefore use names such as `extension-v0.4.0` rather than a bare `v0.4.0`.
 - Optional Chrome DevTools Protocol capture in Deep mode.
 - Candidate DOM-to-network correlation with provenance-aware confidence.
 - Passive anti-bot signal classification and diagnostics.
+- Deterministic Parser Blueprint inference from retained session evidence.
+- Parser-oriented transport, workflow, form, state-carrier, and signal summaries with evidence/confidence.
+- On-demand Parser Blueprint JSON and Markdown export from the side panel.
 - Local session persistence, import/export, bounded storage, and backpressure.
 - Default-on redaction for common credential and session fields.
 
@@ -107,6 +110,36 @@ The MAIN-world transport is deliberately labeled **page-observable** in stored p
 See [`../../docs/extension/EXTENSION_ARCHITECTURE.md`](../../docs/extension/EXTENSION_ARCHITECTURE.md) and
 [`../../docs/extension/SECURITY_MODEL.md`](../../docs/extension/SECURITY_MODEL.md) for the full model.
 
+## Parser Blueprint
+
+Parser Blueprint is a deterministic post-session analysis layer that derives a parser-oriented implementation map from retained BRT evidence.
+
+```text
+Session Evidence
+      |
+      v
+Parser Blueprint inference
+      |
+      +-- transport model
+      +-- ordered workflow steps
+      +-- form-field models
+      +-- state carriers
+      +-- protection / analytics / infrastructure signals
+      +-- evidence-backed parser implications
+      |
+      v
+Blueprint JSON / Markdown / side-panel view
+```
+
+The Blueprint distinguishes API-driven workflows from classic document/form workflows, preserves evidence references and confidence, and records observed ordering without upgrading temporal proximity into unsupported causation.
+
+Request bodies are reduced to schema-oriented metadata such as field names and structural type. Raw request/form values are not copied into the Blueprint. Hidden form state, cookies, and similar carriers are represented through bounded metadata and existing redaction-first evidence.
+
+Parser Blueprint is a **derived artifact**, not part of the persisted raw session schema. Existing session JSON export/import remains available independently and backward-compatible.
+
+Generation is explicit and on demand. The normal side-panel refresh loop does not continuously recompute the Blueprint. If the current session advances after a Blueprint was generated, Blueprint export refreshes the derived artifact before writing JSON or Markdown.
+
+The output describes observed implementation requirements such as preserving cookies, refreshing document-scoped hidden state, or reproducing classic form semantics. It does not generate challenge bypass, CAPTCHA solving, token replay, or exploit logic.
 ## Source indexing policy
 
 Version 0.4.0 uses a fail-closed external-source policy:
@@ -207,6 +240,8 @@ npm run verify
 - Redaction regression tests.
 - DOM/network correlation boundary tests.
 - Frame-aware document, source, navigation, snapshot-ownership, and anti-bot lifecycle regression tests.
+- Parser Blueprint transport, workflow, form, state-carrier, signal-separation, renderer, and side-panel integration tests.
+- End-to-end Parser Blueprint acceptance fixtures for XHR/API, classic POST/navigation, dynamic hidden/view-state fields, analytics plus protection, affinity-cookie metadata, and deterministic ordering.
 - Reproducible local top-frame/cross-origin-iframe browser fixture under `tests/fixtures/frame-aware/`.
 
 ## Known limitations

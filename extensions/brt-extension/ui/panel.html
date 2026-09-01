@@ -48,6 +48,7 @@
     <button class="tab" data-tab="search">Search</button>
     <button class="tab" data-tab="sources">Sources</button>
     <button class="tab" data-tab="lab">Lab</button>
+    <button class="tab" data-tab="blueprint">Blueprint</button>
     <button class="tab" data-tab="session">Session</button>
   </nav>
 
@@ -136,6 +137,22 @@
       <section id="lab-api" class="labPane active"><div id="apiExplorer" class="list"></div></section>
       <section id="lab-correlation" class="labPane"><div id="correlations" class="list"></div></section>
       <section id="lab-diagnostics" class="labPane"><div id="diagnostics" class="list"></div></section>
+    </section>
+
+    <section id="tab-blueprint" class="tabPane">
+      <div class="paneHeader">
+        <div>
+          <h2>Parser Blueprint</h2>
+          <p>Deterministic parser-oriented analysis derived from retained session evidence.</p>
+        </div>
+        <div class="filterRow">
+          <button id="blueprintRefreshBtn" class="button primary">Generate / Refresh</button>
+          <button id="blueprintJsonBtn" class="button">Export Blueprint JSON</button>
+          <button id="blueprintMarkdownBtn" class="button">Export Markdown</button>
+        </div>
+      </div>
+      <div id="blueprintMeta" class="muted">Blueprint has not been generated for this session.</div>
+      <pre id="blueprintOutput" class="code sessionDump">Generate a Parser Blueprint to inspect deterministic transport, workflow, forms, state carriers, signals and parser implications.</pre>
     </section>
 
     <section id="tab-session" class="tabPane">
