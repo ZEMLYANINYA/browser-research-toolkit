@@ -5,18 +5,43 @@ function safeString(value) {
 }
 
 function safeNumber(value) {
-  return Number.isFinite(Number(value))
-    ? Number(value)
-    : 0;
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
+    return null;
+  }
+
+  const number = Number(value);
+
+  return Number.isFinite(number)
+    ? number
+    : null;
+}
+
+function compareText(a, b) {
+  const left = safeString(a) || '';
+  const right = safeString(b) || '';
+
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function sortableNumber(value) {
+  const number = safeNumber(value);
+
+  return number == null
+    ? Number.MAX_SAFE_INTEGER
+    : number;
 }
 
 function evidenceRef(item, reason) {
   return {
     eventId: safeString(item?.eventId) || null,
     sequence:
-      Number.isFinite(Number(item?.sequence))
-        ? Number(item.sequence)
-        : null,
+      safeNumber(item?.sequence),
     kind: safeString(item?.kind) || 'unknown',
     documentId: safeString(item?.documentId) || null,
     frameId:
@@ -169,13 +194,30 @@ function inferTransport(session) {
       return aSequence - bSequence;
     }
 
-    return String(a.eventId || '').localeCompare(
-      String(b.eventId || '')
-    );
+    return compareText(a.eventId, b.eventId);
   });
+
+  const hasApiTransport =
+    counts.fetch > 0 ||
+    counts.xhr > 0;
+
+  const hasDocumentTransport =
+    counts.classicForm > 0 ||
+    counts.hardNavigation > 0;
+
+  const model =
+    hasApiTransport &&
+    hasDocumentTransport
+      ? 'mixed'
+      : hasApiTransport
+        ? 'api-driven'
+        : hasDocumentTransport
+          ? 'document-driven'
+          : 'unknown';
 
   return {
     primary,
+    model,
     counts,
     confidence,
     evidence
@@ -183,59 +225,195 @@ function inferTransport(session) {
 }
 
 function compareBlueprintEvents(a, b) {
-  const sequenceA = Number.isFinite(Number(a?.sequence))
-    ? Number(a.sequence)
-    : Number.MAX_SAFE_INTEGER;
+  const sequenceA =
+    sortableNumber(a?.sequence);
 
-  const sequenceB = Number.isFinite(Number(b?.sequence))
-    ? Number(b.sequence)
-    : Number.MAX_SAFE_INTEGER;
+  const sequenceB =
+    sortableNumber(b?.sequence);
 
   if (sequenceA !== sequenceB) {
     return sequenceA - sequenceB;
   }
 
-  const timeA = Number.isFinite(Number(a?.wallTime))
-    ? Number(a.wallTime)
-    : Number.MAX_SAFE_INTEGER;
+  const timeA =
+    sortableNumber(a?.wallTime);
 
-  const timeB = Number.isFinite(Number(b?.wallTime))
-    ? Number(b.wallTime)
-    : Number.MAX_SAFE_INTEGER;
+  const timeB =
+    sortableNumber(b?.wallTime);
 
   if (timeA !== timeB) {
     return timeA - timeB;
   }
 
-  return String(a?.eventId || '')
-    .localeCompare(String(b?.eventId || ''));
+  return compareText(
+    a?.eventId,
+    b?.eventId
+  );
 }
 
 function workflowEventKey(item) {
-  const eventId = safeString(item?.eventId);
+  const eventId =
+    safeString(item?.eventId);
 
   if (eventId) {
     return 'event:' + eventId;
   }
 
   return [
-    safeString(item?.kind),
-    Number(item?.sequence) || 0,
-    safeString(item?.documentId),
+    safeString(item?.kind) || 'unknown',
+    safeNumber(item?.sequence) ??
+      'missing-sequence',
+    safeString(item?.documentId) ||
+      'unknown-document',
     Number.isInteger(item?.frameId)
       ? item.frameId
-      : 'unknown'
+      : 'unknown-frame'
   ].join('|');
 }
 
-function buildWorkflow(session) {
-  const timeline = Array.isArray(session?.timeline)
-    ? session.timeline
-    : [];
+function deriveEndpointFamily(target) {
+  const raw = safeString(target);
 
-  const network = Array.isArray(session?.network)
-    ? session.network
-    : [];
+  if (!raw) return null;
+
+  try {
+    const url = new URL(raw);
+    return url.pathname || '/';
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSchemaFields(fields) {
+  return [
+    ...new Set(
+      (Array.isArray(fields)
+        ? fields
+        : [])
+        .map(value =>
+          safeString(value)
+        )
+        .filter(Boolean)
+    )
+  ].sort(compareText);
+}
+
+function schemaFromBody(value) {
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    return {
+      kind: 'array'
+    };
+  }
+
+  if (
+    typeof value === 'object'
+  ) {
+    return {
+      kind: 'object',
+      fields:
+        Object.keys(value)
+          .sort(compareText)
+    };
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+
+    if (!trimmed) {
+      return {
+        kind: 'text'
+      };
+    }
+
+    try {
+      const parsed =
+        JSON.parse(trimmed);
+
+      return schemaFromBody(parsed);
+    } catch {
+      // Not JSON.
+    }
+
+    if (
+      trimmed.includes('=') &&
+      !trimmed.includes('\n')
+    ) {
+      try {
+        const params =
+          new URLSearchParams(trimmed);
+
+        const fields =
+          normalizeSchemaFields(
+            [...params.keys()]
+          );
+
+        if (fields.length > 0) {
+          return {
+            kind: 'form-urlencoded',
+            fields
+          };
+        }
+      } catch {
+        // Keep bounded schema only.
+      }
+    }
+
+    return {
+      kind: 'text'
+    };
+  }
+
+  return {
+    kind: typeof value
+  };
+}
+
+function inferRequestBodySchema(data) {
+  const body =
+    data?.body ??
+    data?.requestBody ??
+    data?.request?.body ??
+    null;
+
+  return schemaFromBody(body);
+}
+
+function inferFormBodySchema(data) {
+  const fields =
+    Array.isArray(data?.fields)
+      ? data.fields
+      : [];
+
+  const names =
+    normalizeSchemaFields(
+      fields.map(field =>
+        field?.name
+      )
+    );
+
+  return {
+    kind: 'form',
+    fields: names
+  };
+}
+
+function buildWorkflow(session) {
+  const timeline =
+    Array.isArray(session?.timeline)
+      ? session.timeline
+      : [];
+
+  const network =
+    Array.isArray(session?.network)
+      ? session.network
+      : [];
 
   const relevant = [
     ...timeline,
@@ -249,75 +427,198 @@ function buildWorkflow(session) {
   const deduped = new Map();
 
   for (const item of relevant) {
-    const key = workflowEventKey(item);
+    const key =
+      workflowEventKey(item);
 
     if (!deduped.has(key)) {
       deduped.set(key, item);
     }
   }
 
-  const ordered = [...deduped.values()]
-    .sort(compareBlueprintEvents);
+  const ordered =
+    [...deduped.values()]
+      .sort(compareBlueprintEvents);
+
+  const steps =
+    ordered.map(
+      (item, stepIndex) => {
+        const data =
+          item?.data &&
+          typeof item.data === 'object'
+            ? item.data
+            : {};
+
+        let method = null;
+        let target = null;
+        let transport = null;
+        let reason =
+          'observed workflow event';
+
+        if (
+          item.kind === 'form-submit'
+        ) {
+          method =
+            safeString(data.method)
+              ?.toUpperCase() ||
+            'GET';
+
+          target =
+            safeString(data.action) ||
+            null;
+
+          transport =
+            'classic-form';
+
+          reason =
+            'observed form submission';
+        } else if (
+          item.kind ===
+          'network-request'
+        ) {
+          method =
+            safeString(data.method)
+              ?.toUpperCase() ||
+            null;
+
+          target =
+            safeString(data.url) ||
+            null;
+
+          transport =
+            safeString(
+              data.transport
+            ) || 'network';
+
+          reason =
+            'observed network request';
+        } else if (
+          item.kind ===
+          'hard-navigation'
+        ) {
+          method =
+            safeString(data.method)
+              ?.toUpperCase() ||
+            null;
+
+          target =
+            safeString(data.url) ||
+            safeString(data.to) ||
+            null;
+
+          transport = 'document';
+
+          reason =
+            'observed hard navigation';
+        }
+
+        const endpointFamily =
+          safeString(
+            data.endpointFamily
+          ) ||
+          deriveEndpointFamily(
+            target
+          );
+
+        const requestBodySchema =
+          item.kind ===
+          'network-request'
+            ? inferRequestBodySchema(
+                data
+              )
+            : item.kind ===
+                'form-submit'
+              ? inferFormBodySchema(
+                  data
+                )
+              : null;
+
+        return {
+          stepIndex,
+
+          kind:
+            safeString(item.kind) ||
+            'unknown',
+
+          method,
+          target,
+          endpointFamily,
+          requestBodySchema,
+          transport,
+
+          trigger:
+            item.kind ===
+            'form-submit'
+              ? safeString(
+                  data.trigger
+                ) || null
+              : null,
+
+          documentId:
+            safeString(
+              item.documentId
+            ) || null,
+
+          frameId:
+            Number.isInteger(
+              item.frameId
+            )
+              ? item.frameId
+              : null,
+
+          confidence: 0.98,
+
+          evidence:
+            evidenceRef(
+              item,
+              reason
+            )
+        };
+      }
+    );
+
+  for (
+    let index = 1;
+    index < steps.length;
+    index += 1
+  ) {
+    const previous =
+      steps[index - 1];
+
+    const current =
+      steps[index];
+
+    const frameCompatible =
+      previous.frameId == null ||
+      current.frameId == null ||
+      previous.frameId ===
+        current.frameId;
+
+    if (
+      frameCompatible &&
+      previous.kind ===
+        'form-submit' &&
+      current.kind ===
+        'hard-navigation'
+    ) {
+      current.relationshipToPrevious = {
+        type:
+          'observed-after-form-submit',
+
+        previousStepIndex:
+          previous.stepIndex,
+
+        confidence: 0.85,
+
+        evidence: [
+          previous.evidence,
+          current.evidence
+        ]
+      };
+    }
+  }
 
   return {
-    steps: ordered.map((item, stepIndex) => {
-      const data =
-        item?.data && typeof item.data === 'object'
-          ? item.data
-          : {};
-
-      let target = null;
-      let transport = null;
-      let method = null;
-      let reason = 'observed workflow event';
-
-      if (item.kind === 'form-submit') {
-        target = safeString(data.action) || null;
-        transport = 'classic-form';
-        method = safeString(data.method)
-          ? safeString(data.method).toUpperCase()
-          : null;
-        reason = 'observed form submission';
-      }
-
-      if (item.kind === 'network-request') {
-        target = safeString(data.url) || null;
-        transport =
-          safeString(data.transport) || 'network';
-        method = safeString(data.method)
-          ? safeString(data.method).toUpperCase()
-          : null;
-        reason = 'observed network request';
-      }
-
-      if (item.kind === 'hard-navigation') {
-        target =
-          safeString(data.url) ||
-          safeString(data.to) ||
-          null;
-        transport = 'document';
-        reason = 'observed hard navigation';
-      }
-
-      return {
-        stepIndex,
-        kind: safeString(item.kind) || 'unknown',
-        method,
-        target,
-        transport,
-        trigger:
-          item.kind === 'form-submit'
-            ? safeString(data.trigger) || null
-            : null,
-        documentId:
-          safeString(item.documentId) || null,
-        frameId:
-          Number.isInteger(item.frameId)
-            ? item.frameId
-            : null,
-        evidence: evidenceRef(item, reason)
-      };
-    })
+    steps
   };
 }
 
@@ -354,9 +655,7 @@ function normalizeFormObservation(item) {
   return {
     eventId: safeString(item?.eventId) || null,
     sequence:
-      Number.isFinite(Number(item?.sequence))
-        ? Number(item.sequence)
-        : null,
+      safeNumber(item?.sequence),
     documentId:
       safeString(item?.documentId) || null,
     frameId:
@@ -431,59 +730,136 @@ function buildFormFieldModel(
   const rows = observations
     .map(observation =>
       observation.fields.find(
-        field => field.fieldIndex === fieldIndex
+        field =>
+          field.fieldIndex ===
+          fieldIndex
       )
     )
     .filter(Boolean);
 
-  const observedNames = uniqueObserved(
-    rows.map(row => row.name)
-  );
+  const observedNames =
+    uniqueObserved(
+      rows.map(row => row.name)
+    );
 
-  const observedTypes = uniqueObserved(
-    rows.map(row => row.type)
-  );
+  const observedTypes =
+    uniqueObserved(
+      rows.map(row => row.type)
+    );
 
-  let nameStability = 'insufficient-evidence';
+  let nameStability =
+    'insufficient-evidence';
 
   if (observations.length >= 2) {
     nameStability =
-      rows.length === observations.length &&
+      rows.length ===
+        observations.length &&
       rows.every(
-        row => row.name === rows[0]?.name
+        row =>
+          row.name ===
+          rows[0]?.name
       )
         ? 'stable'
         : 'changing';
   }
 
-  let typeStability = 'insufficient-evidence';
+  let typeStability =
+    'insufficient-evidence';
 
   if (observations.length >= 2) {
     typeStability =
-      rows.length === observations.length &&
+      rows.length ===
+        observations.length &&
       rows.every(
-        row => row.type === rows[0]?.type
+        row =>
+          row.type ===
+          rows[0]?.type
       )
         ? 'stable'
         : 'changing';
   }
 
   const present =
-    rows.filter(row => row.hasValue).length;
+    rows.filter(
+      row => row.hasValue
+    ).length;
 
   const empty =
-    observations.length - present;
+    rows.length - present;
 
   let presenceStability =
     'insufficient-evidence';
 
-  if (observations.length >= 2) {
+  if (rows.length >= 2) {
     presenceStability =
-      present === observations.length ||
-      empty === observations.length
+      present === rows.length ||
+      empty === rows.length
         ? 'stable'
         : 'changing';
   }
+
+  let visibility = 'unknown';
+
+  if (rows.length > 0) {
+    const hiddenCount =
+      rows.filter(
+        row => row.hidden
+      ).length;
+
+    visibility =
+      hiddenCount === rows.length
+        ? 'hidden'
+        : hiddenCount === 0
+          ? 'visible'
+          : 'mixed';
+  }
+
+  const generatedName =
+    nameStability === 'changing' &&
+    observedNames.length >= 2;
+
+  const probableViewState =
+    visibility === 'hidden' &&
+    observedNames.some(name =>
+      /viewstate/i.test(name)
+    );
+
+  const probableCsrfState =
+    visibility === 'hidden' &&
+    observedNames.some(name =>
+      /(?:csrf|xsrf|requestverificationtoken)/i
+        .test(name)
+    );
+
+  const role =
+    probableViewState
+      ? 'probable-view-state'
+      : probableCsrfState
+        ? 'probable-csrf-state'
+        : generatedName
+          ? 'probable-generated-field'
+          : 'unknown';
+
+  const stateScope =
+    probableViewState ||
+    probableCsrfState ||
+    (
+      visibility === 'hidden' &&
+      generatedName
+    )
+      ? 'probable-document'
+      : 'unknown';
+
+  const confidence =
+    probableViewState
+      ? 0.94
+      : probableCsrfState
+        ? 0.9
+        : generatedName
+          ? 0.86
+          : rows.length >= 2
+            ? 0.78
+            : 0.65;
 
   return {
     fieldIndex,
@@ -506,25 +882,39 @@ function buildFormFieldModel(
         ? observedTypes[0] ?? null
         : null,
 
-    observedIn: rows.length,
+    visibility,
+    generatedName,
+    role,
+    stateScope,
+    confidence,
+
+    observedIn:
+      rows.length,
 
     missingFrom:
-      observations.length - rows.length,
+      observations.length -
+      rows.length,
 
     valuePresence: {
       present,
       empty,
-      stability: presenceStability
+      stability:
+        presenceStability
     },
 
-    evidence: observations
-      .filter(observation =>
-        observation.fields.some(
-          field =>
-            field.fieldIndex === fieldIndex
+    evidence:
+      observations
+        .filter(observation =>
+          observation.fields.some(
+            field =>
+              field.fieldIndex ===
+              fieldIndex
+          )
         )
-      )
-      .map(observation => observation.evidence)
+        .map(
+          observation =>
+            observation.evidence
+        )
   };
 }
 
@@ -645,9 +1035,7 @@ function signalEvidenceRef(signal, reason) {
     signalId:
       safeString(signal?.signalId) || null,
     sequence:
-      Number.isFinite(Number(signal?.firstSequence))
-        ? Number(signal.firstSequence)
-        : null,
+      safeNumber(signal?.firstSequence),
     kind:
       safeString(signal?.kind) || 'unknown',
     documentId:
@@ -734,7 +1122,7 @@ function buildSignals(session) {
       const bId =
         b.evidence[0]?.signalId || '';
 
-      return aId.localeCompare(bId);
+      return compareText(aId, bId);
     });
 
   const analytics = [];
@@ -865,42 +1253,33 @@ function buildSignals(session) {
   }
 
   analytics.sort((a, b) =>
-    String(
-      a.evidence[0]?.eventId || ''
-    ).localeCompare(
-      String(
-        b.evidence[0]?.eventId || ''
-      )
+    compareText(
+      a.evidence[0]?.eventId,
+      b.evidence[0]?.eventId
     )
   );
 
   infrastructure.sort((a, b) => {
     const providerDelta =
-      String(a.provider || '')
-        .localeCompare(
-          String(b.provider || '')
-        );
+      compareText(
+        a.provider,
+        b.provider
+      );
 
     if (providerDelta !== 0) {
       return providerDelta;
     }
 
-    return String(
-      a.evidence[0]?.eventId || ''
-    ).localeCompare(
-      String(
-        b.evidence[0]?.eventId || ''
-      )
+    return compareText(
+      a.evidence[0]?.eventId,
+      b.evidence[0]?.eventId
     );
   });
 
   unknown.sort((a, b) =>
-    String(
-      a.evidence[0]?.eventId || ''
-    ).localeCompare(
-      String(
-        b.evidence[0]?.eventId || ''
-      )
+    compareText(
+      a.evidence[0]?.eventId,
+      b.evidence[0]?.eventId
     )
   );
 
@@ -1009,6 +1388,22 @@ function carrierKey(carrier) {
       ? carrier.frameId
       : ''
   ].join('|');
+}
+
+function cookieCarrierRole(name) {
+  const value =
+    safeString(name) || '';
+
+  if (
+    /^(?:BIGipServer|AWSALB|AWSALBCORS|ARRAffinity|SERVERID|ROUTEID)/i
+      .test(value)
+  ) {
+    return (
+      'probable-load-balancer-affinity'
+    );
+  }
+
+  return 'unknown';
 }
 
 function buildStateCarriers(
@@ -1130,6 +1525,8 @@ function buildStateCarriers(
         carriers.push({
           type: 'cookie',
           name,
+          role:
+            cookieCarrierRole(name),
           documentId:
             safeString(
               item.documentId

@@ -47,11 +47,17 @@ function code(value) {
 
 function sortedCopy(items, selector) {
   return Array.isArray(items)
-    ? [...items].sort((a, b) =>
-        selector(a).localeCompare(
-          selector(b)
-        )
-      )
+    ? [...items].sort((a, b) => {
+        const left =
+          String(selector(a) ?? '');
+
+        const right =
+          String(selector(b) ?? '');
+
+        if (left < right) return -1;
+        if (left > right) return 1;
+        return 0;
+      })
     : [];
 }
 
@@ -132,6 +138,13 @@ function renderTransport(transport) {
       code(
         text(
           transport?.primary,
+          'unknown'
+        )
+      ),
+    '- Model: ' +
+      code(
+        text(
+          transport?.model,
           'unknown'
         )
       ),
@@ -231,6 +244,35 @@ function renderWorkflow(workflow) {
             step.target,
             'unknown'
           )
+        ),
+      '- Endpoint family: ' +
+        code(
+          text(
+            step.endpointFamily,
+            'unknown'
+          )
+        ),
+      '- Request body schema: ' +
+        (
+          step.requestBodySchema
+            ? code(
+                step.requestBodySchema.kind +
+                (
+                  Array.isArray(
+                    step.requestBodySchema.fields
+                  ) &&
+                  step.requestBodySchema.fields.length
+                    ? '(' +
+                      step.requestBodySchema.fields.join(', ') +
+                      ')'
+                    : ''
+                )
+              )
+            : code('none')
+        ),
+      '- Confidence: ' +
+        confidence(
+          step.confidence
         ),
       '- Trigger: ' +
         code(
