@@ -2,7 +2,7 @@ import { LIMITS, trimText, sanitizeUrl } from './shared.js';
 import {
   ensureStorageStats, rebuildStorageStats, trackedPush, trackedReplace, removeTrackedAt, adjustTrackedBucketBytes,
   pushTimelineTracked, ensureDocument, resolveCanonicalDocumentId, minimalEventEnvelope,
-  normalizeModeState, setCdpState, buildDomNetworkCorrelation
+  normalizeModeState, setCdpState, buildDomNetworkCorrelation, applyCommittedNavigation
 } from './session-utils.js';
 import {
   classifyAntiBotRecord, createAntiBotState, ensureAntiBotState, recordAntiBotAgentStatus,
@@ -724,7 +724,7 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
     ? sanitizeUrl(senderObservedUrl || session.pageUrl || '')
     : sanitizeUrl(senderObservedUrl || reportedPageUrl || session.pageUrl || '');
   if (pageObservable && canonical.frameId === 0 && senderObservedUrl) session.pageUrl = senderObservedUrl;
-  if (canonical.kind === 'agent-status') {
+  if (canonical.kind === 'agent-status' && canonical.frameId === 0) {
     session.agentActive = Boolean(canonical.data?.active);
     session.agentStatusAt = Date.now();
     if (!session.stopRequested && session.agentActive !== session.running) {
@@ -764,7 +764,7 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
 
   if (session.captureSettings?.antibot === true) {
     session.antiBot = ensureAntiBotState(session.antiBot, true);
-    if (canonical.kind === 'agent-status') recordAntiBotAgentStatus(session.antiBot, canonical);
+    if (canonical.kind === 'agent-status' && canonical.frameId === 0) recordAntiBotAgentStatus(session.antiBot, canonical);
     if (canonical.kind === 'navigation') recordAntiBotNavigation(session.antiBot, canonical);
     const antiBotClassification = classifyAntiBotRecord(canonical);
     if (antiBotClassification.isAntiBotSignal) {
@@ -784,11 +784,11 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
     }
   }
 
-  if (canonical.kind === 'html-snapshot') {
+  if (canonical.kind === 'html-snapshot' && canonical.frameId === 0) {
     trackedReplace(session, 'html', trimText(canonical.data?.text || '', LIMITS.maxHtmlChars), 'html');
-  } else if (canonical.kind === 'runtime-snapshot') {
+  } else if (canonical.kind === 'runtime-snapshot' && canonical.frameId === 0) {
     trackedReplace(session, 'runtime', (canonical.data?.entries || []).slice(0, LIMITS.maxRuntimeEntries), 'runtime');
-  } else if (canonical.kind === 'runtime-watch') {
+  } else if (canonical.kind === 'runtime-watch' && canonical.frameId === 0) {
     const path = canonical.data?.path;
     if (path) {
       const previous = session.watches[path];
@@ -1184,22 +1184,66 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.webNavigation?.onCommitted?.addListener(async details => {
-  if (details.frameId !== 0) return;
   const session = await loadSession(details.tabId);
   if (!session.running || !session.preserveSession || session.importedReadOnly) return;
+
   const safeUrl = sanitizeUrl(details.url);
-  const documentId = details.documentId || `document_${Date.now()}`;
-  session.pageUrl = safeUrl;
+  const committedAt = Date.now();
+
+  const navigation = applyCommittedNavigation(session, {
+    documentId: details.documentId,
+    url: safeUrl,
+    frameId: details.frameId,
+    parentFrameId: details.parentFrameId,
+    parentDocumentId: details.parentDocumentId,
+    frameType: details.frameType,
+    documentLifecycle: details.documentLifecycle,
+    transitionType: details.transitionType,
+    firstSeen: committedAt
+  });
+
   antiBotAnalysisCache.delete(details.tabId);
-  session.activeDocumentId = documentId;
-  ensureDocument(session, { documentId, url: safeUrl, firstSeen: Date.now(), transitionType: details.transitionType, frameId: details.frameId });
   session.counters.navigations += 1;
-  const hardNavigation = { kind: 'hard-navigation', eventId: `evt_${Date.now().toString(36)}_${++session.sequence}`, sessionId: session.sessionId, sequence: session.sequence, wallTime: Date.now(), monotonicTime: null, documentId, label: `document ${safeUrl}`, data: { documentId, url: safeUrl, transitionType: details.transitionType }, provenance: { collector: 'chrome.webNavigation', transport: 'chrome.webNavigation', integrity: 'browser-controlled' } };
+
+  const hardNavigation = {
+    kind: 'hard-navigation',
+    eventId: `evt_${Date.now().toString(36)}_${++session.sequence}`,
+    sessionId: session.sessionId,
+    sequence: session.sequence,
+    wallTime: committedAt,
+    monotonicTime: null,
+
+    documentId: navigation.documentId,
+    frameId: navigation.frameId,
+
+    label: `${navigation.isTopFrame ? 'document' : 'subframe'} ${safeUrl}`,
+
+    data: {
+      documentId: navigation.documentId,
+      url: safeUrl,
+      transitionType: details.transitionType,
+      frameId: navigation.frameId,
+      parentFrameId: details.parentFrameId,
+      parentDocumentId: details.parentDocumentId,
+      frameType: details.frameType,
+      documentLifecycle: details.documentLifecycle,
+      isTopFrame: navigation.isTopFrame
+    },
+
+    provenance: {
+      collector: 'chrome.webNavigation',
+      transport: 'chrome.webNavigation',
+      integrity: 'browser-controlled'
+    }
+  };
+
   pushTimeline(session, hardNavigation);
+
   if (session.captureSettings?.antibot === true) {
     session.antiBot = ensureAntiBotState(session.antiBot, true);
     recordAntiBotNavigation(session.antiBot, hardNavigation);
   }
+
   scheduleFlush(details.tabId);
 });
 

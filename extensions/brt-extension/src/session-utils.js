@@ -142,21 +142,157 @@ export function resolveCanonicalDocumentId(payload, senderDocumentId) {
   return senderDocumentId || payload?.chromeDocumentId || payload?.documentId || 'unknown';
 }
 
-export function ensureDocument(session, { documentId, url, firstSeen = Date.now(), transitionType = undefined, frameId = 0, performanceTimeOrigin = undefined } = {}) {
+export function ensureDocument(session, {
+  documentId,
+  url,
+  firstSeen = Date.now(),
+  transitionType = undefined,
+  frameId = undefined,
+  parentFrameId = undefined,
+  parentDocumentId = undefined,
+  frameType = undefined,
+  documentLifecycle = undefined,
+  performanceTimeOrigin = undefined
+} = {}) {
   if (!documentId || documentId === 'unknown') return null;
   session.documents = Array.isArray(session.documents) ? session.documents : [];
   let doc = session.documents.find(item => item.documentId === documentId);
   if (!doc) {
-    doc = { documentId, url: url || '', firstSeen, frameId };
+    const canonicalFrameId =
+      Number.isInteger(frameId) && frameId >= 0
+        ? frameId
+        : 0;
+
+    doc = {
+      documentId,
+      url: url || '',
+      firstSeen,
+      frameId: canonicalFrameId
+    };
     if (transitionType) doc.transitionType = transitionType;
-    if (Number.isFinite(performanceTimeOrigin)) doc.performanceTimeOrigin = performanceTimeOrigin;
+
+    if (Number.isInteger(parentFrameId)) {
+      doc.parentFrameId = parentFrameId;
+    }
+
+    if (
+      typeof parentDocumentId === 'string' &&
+      parentDocumentId
+    ) {
+      doc.parentDocumentId = parentDocumentId;
+    }
+
+    if (typeof frameType === 'string' && frameType) {
+      doc.frameType = frameType;
+    }
+
+    if (
+      typeof documentLifecycle === 'string' &&
+      documentLifecycle
+    ) {
+      doc.documentLifecycle = documentLifecycle;
+    }
+
+    if (Number.isFinite(performanceTimeOrigin)) {
+      doc.performanceTimeOrigin = performanceTimeOrigin;
+    }
+
     session.documents.push(doc);
     return doc;
   }
   if (url) doc.url = url;
   if (transitionType) doc.transitionType = transitionType;
-  if (Number.isFinite(performanceTimeOrigin)) doc.performanceTimeOrigin = performanceTimeOrigin;
+
+  if (Number.isInteger(frameId) && frameId >= 0) {
+    doc.frameId = frameId;
+  }
+
+  if (Number.isInteger(parentFrameId)) {
+    doc.parentFrameId = parentFrameId;
+  }
+
+  if (
+    typeof parentDocumentId === 'string' &&
+    parentDocumentId
+  ) {
+    doc.parentDocumentId = parentDocumentId;
+  }
+
+  if (typeof frameType === 'string' && frameType) {
+    doc.frameType = frameType;
+  }
+
+  if (
+    typeof documentLifecycle === 'string' &&
+    documentLifecycle
+  ) {
+    doc.documentLifecycle = documentLifecycle;
+  }
+
+  if (Number.isFinite(performanceTimeOrigin)) {
+    doc.performanceTimeOrigin = performanceTimeOrigin;
+  }
+
   return doc;
+}
+
+export function applyCommittedNavigation(session, details = {}) {
+  const firstSeen =
+    Number.isFinite(details.firstSeen)
+      ? details.firstSeen
+      : Date.now();
+
+  const frameId =
+    Number.isInteger(details.frameId) &&
+    details.frameId >= 0
+      ? details.frameId
+      : 0;
+
+  const isTopFrame = frameId === 0;
+
+  const documentId =
+    typeof details.documentId === 'string' &&
+    details.documentId
+      ? details.documentId
+      : `document_${firstSeen}_${frameId}`;
+
+  const url =
+    typeof details.url === 'string'
+      ? details.url
+      : '';
+
+  const document = ensureDocument(session, {
+    documentId,
+    url,
+    firstSeen,
+    transitionType: details.transitionType,
+    frameId,
+    parentFrameId: details.parentFrameId,
+    parentDocumentId: details.parentDocumentId,
+    frameType: details.frameType,
+    documentLifecycle: details.documentLifecycle
+  });
+
+  /*
+   * Only the outermost frame owns canonical session navigation state.
+   * Child frames have their own document/frame identity but cannot
+   * redefine the session's first-party page boundary.
+   */
+  if (isTopFrame) {
+    if (url) {
+      session.pageUrl = url;
+    }
+
+    session.activeDocumentId = documentId;
+  }
+
+  return {
+    isTopFrame,
+    frameId,
+    documentId,
+    url,
+    document
+  };
 }
 
 export function minimalEventEnvelope(item) {
@@ -168,6 +304,7 @@ export function minimalEventEnvelope(item) {
     kind: item.kind,
     sessionId: item.sessionId,
     documentId: item.documentId,
+    frameId: Number.isInteger(item.frameId) ? item.frameId : null,
     wallTime: item.wallTime,
     label: item.label || null,
     provenance: item.provenance || null,
@@ -218,6 +355,25 @@ export function buildDomNetworkCorrelation(interaction, request, { maxSequenceGa
   if (interaction.kind !== 'dom-event' || request.kind !== 'network-request') return null;
   if (interaction.sessionId && request.sessionId && interaction.sessionId !== request.sessionId) return null;
   if (interaction.documentId && request.documentId && interaction.documentId !== request.documentId) return null;
+
+  const interactionFrameId =
+    Number.isInteger(interaction.frameId)
+      ? interaction.frameId
+      : null;
+
+  const requestFrameId =
+    Number.isInteger(request.frameId)
+      ? request.frameId
+      : null;
+
+  if (
+    interactionFrameId !== null &&
+    requestFrameId !== null &&
+    interactionFrameId !== requestFrameId
+  ) {
+    return null;
+  }
+
   if (interaction.data?.isTrusted !== true) return null;
 
   const sequenceGap = Number(request.sequence) - Number(interaction.sequence);
@@ -231,10 +387,20 @@ export function buildDomNetworkCorrelation(interaction, request, { maxSequenceGa
   const confidence = pageObservable ? 0.30 : 0.40;
   const evidence = [
     'same session',
-    'same document',
+    'same document'
+  ];
+
+  if (
+    interactionFrameId !== null &&
+    requestFrameId !== null
+  ) {
+    evidence.push('same frame');
+  }
+
+  evidence.push(
     `request followed interaction by ${wallTimeDeltaMs}ms`,
     'event reported isTrusted=true'
-  ];
+  );
   if (pageObservable) evidence.push('interaction arrived through page-observable MAIN-world channel');
 
   return {
