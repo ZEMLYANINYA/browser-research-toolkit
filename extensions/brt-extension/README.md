@@ -10,10 +10,10 @@ fingerprint spoofer, or an access-control bypass tool.
 
 ## Version
 
-Extension release line: **0.4.0**
+Extension release line: **0.5.0**
 
 The extension uses its own version line independently from the TypeScript core package in the repository. Git tags should
-therefore use names such as `extension-v0.4.0` rather than a bare `v0.4.0`.
+therefore use names such as `extension-v0.5.0` rather than a bare `v0.5.0`.
 
 ## Main capabilities
 
@@ -142,7 +142,7 @@ Generation is explicit and on demand. The normal side-panel refresh loop does no
 The output describes observed implementation requirements such as preserving cookies, refreshing document-scoped hidden state, or reproducing classic form semantics. It does not generate challenge bypass, CAPTCHA solving, token replay, or exploit logic.
 ## Source indexing policy
 
-Version 0.4.0 uses a fail-closed external-source policy:
+The extension uses a fail-closed external-source policy:
 
 - A script on the **same hostname** as the captured page may be fetched and indexed.
 - A script on another hostname is **not fetched by default**.

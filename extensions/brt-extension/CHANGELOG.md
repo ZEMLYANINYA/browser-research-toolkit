@@ -1,9 +1,10 @@
 # Extension changelog
 
-## Unreleased
+## 0.5.0 - 2026-09-01
 
 ### Added
 
+- Passive F5 BIG-IP / Advanced WAF evidence detection, including strong TSPD/reject-page signals and weak load-balancer affinity evidence.
 - Deterministic Parser Blueprint generation from retained session evidence.
 - API-driven, document-driven, and mixed transport-model inference with evidence and confidence.
 - Ordered parser workflow steps with endpoint-family and request-body-schema metadata.
@@ -30,6 +31,10 @@
 
 ### Fixed
 
+- Prevented subframe-only fetch/XHR activity from redefining the top-level Parser Blueprint transport model.
+- Kept form models with different submission encodings separate by including enctype in submission identity.
+- Distinguished canceled SPA submit events from classic form transport while retaining the submit attempt as evidence.
+- Added privacy-preserving live JS-visible cookie-name carrier evidence without retaining cookie values.
 - Prevented arbitrary opaque/free-text `PxN` substrings from being treated as PerimeterX evidence while preserving contextual cookie/header/endpoint detection.
 - Prevented subframe HTML/runtime snapshots from overwriting global top-level session state.
 - Prevented subframe agent status from becoming authoritative over top-level session state.
