@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Browser Research Toolkit",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Local-first browser research extension with passive observability, CDP-assisted deep capture, evidence correlation, anti-bot signals, and a visual research dashboard.",
   "permissions": [
     "activeTab",

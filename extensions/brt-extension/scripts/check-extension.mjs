@@ -18,7 +18,7 @@ for (const file of jsFiles) execFileSync(process.execPath, ['--check', file], { 
 
 const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
 if (manifest.manifest_version !== 3) throw new Error('manifest_version must be 3');
-if (manifest.version !== '0.4.0') throw new Error(`unexpected extension version: ${manifest.version}`);
+if (manifest.version !== '0.5.0') throw new Error(`unexpected extension version: ${manifest.version}`);
 if (manifest.homepage_url !== 'https://github.com/ZEMLYANINYA/browser-research-toolkit') throw new Error('homepage_url is missing or unexpected');
 if (manifest.externally_connectable) throw new Error('externally_connectable must not be enabled');
 
