@@ -1,7 +1,7 @@
 (() => {
   const CHANNEL = '__BRT_LAB_V01__';
   const ALLOWED_PAGE_EVENT_KINDS = new Set([
-    'agent-status', 'antibot-dom-signal', 'connection-lifecycle', 'diagnostic', 'dom-event',
+    'agent-status', 'antibot-dom-signal', 'connection-lifecycle', 'diagnostic', 'dom-event', 'form-submit',
     'html-snapshot', 'mutation', 'navigation', 'network-body', 'network-error', 'network-request',
     'network-response', 'performance', 'performance-summary', 'runtime-snapshot', 'runtime-watch',
     'source-inline', 'source-url', 'storage-snapshot', 'timer-fire', 'timer-schedule', 'worker-awareness'

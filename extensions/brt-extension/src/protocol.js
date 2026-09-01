@@ -7,6 +7,7 @@ export const PAGE_EVENT_KINDS = Object.freeze([
   'connection-lifecycle',
   'diagnostic',
   'dom-event',
+  'form-submit',
   'html-snapshot',
   'mutation',
   'navigation',

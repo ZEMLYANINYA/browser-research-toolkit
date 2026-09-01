@@ -69,6 +69,29 @@ function inferTransport(session) {
   }
 
   for (const item of timeline) {
+    if (item?.kind !== 'form-submit') {
+      continue;
+    }
+
+    const isTopFrame =
+      item?.data?.isTopFrame === true ||
+      item?.frameId === 0;
+
+    if (!isTopFrame) {
+      continue;
+    }
+
+    counts.classicForm += 1;
+
+    evidence.push(
+      evidenceRef(
+        item,
+        'observed top-level form submission'
+      )
+    );
+  }
+
+  for (const item of timeline) {
     if (item?.kind !== 'hard-navigation') {
       continue;
     }
@@ -204,12 +227,6 @@ export function generateParserBlueprint(session = {}) {
 
     implications: [],
 
-    gaps: [
-      {
-        id: 'form-observability',
-        reason:
-          'Dedicated form submission evidence is not yet available.'
-      }
-    ]
+    gaps: []
   };
 }

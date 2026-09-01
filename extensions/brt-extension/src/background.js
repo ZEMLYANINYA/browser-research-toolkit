@@ -476,6 +476,7 @@ function timelineLabel(payload) {
     case 'network-response': return `${d.transport || 'net'} response ${d.status ?? ''} ${d.url || ''}`;
     case 'network-body': return `body ${d.url || ''}`;
     case 'dom-event': return `${d.type || 'event'} ${d.target?.selectorHint || ''}`;
+    case 'form-submit': return `${d.method || 'GET'} form ${d.action || ''} · ${d.trigger || 'native'}`;
     case 'navigation': return `${d.type || 'navigation'} ${d.to || ''}`;
     case 'source-url': return `script ${d.url || ''}`;
     case 'source-inline': return d.label || 'inline script';

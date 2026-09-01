@@ -175,3 +175,41 @@ test('multiple observed transport styles produce mixed inference', () => {
     1
   );
 });
+
+test('form-submit produces classic-form transport inference', () => {
+  const session = baseSession({
+    timeline: [
+      {
+        eventId: 'evt-form-1',
+        sequence: 35,
+        kind: 'form-submit',
+        sessionId: 'session-blueprint-1',
+        documentId: 'doc-top',
+        frameId: 0,
+        wallTime: 3500,
+        data: {
+          trigger: 'native',
+          method: 'POST',
+          action: 'https://example.test/search'
+        }
+      }
+    ]
+  });
+
+  const blueprint = generateParserBlueprint(session);
+
+  assert.equal(
+    blueprint.transport.primary,
+    'classic-form'
+  );
+
+  assert.equal(
+    blueprint.transport.counts.classicForm,
+    1
+  );
+
+  assert.deepEqual(
+    blueprint.transport.evidence.map(item => item.eventId),
+    ['evt-form-1']
+  );
+});
