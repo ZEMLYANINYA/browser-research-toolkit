@@ -4,6 +4,14 @@
 
 ### Added
 
+- Deterministic Parser Blueprint generation from retained session evidence.
+- API-driven, document-driven, and mixed transport-model inference with evidence and confidence.
+- Ordered parser workflow steps with endpoint-family and request-body-schema metadata.
+- Structured classic-form submission observability and form-field stability modelling.
+- Hidden/view-state/generated-field and state-carrier inference without copying raw field values.
+- Separation of protection, analytics/telemetry, infrastructure/session-routing, and unknown signals.
+- Evidence-backed parser implementation implications.
+- Dedicated side-panel Blueprint view with on-demand generation plus JSON and Markdown export.
 - Frame-aware MAIN-world capture for top-level pages and subframes.
 - Browser-controlled frame/document provenance for committed subframe navigations.
 - Per-document lightweight HTML/runtime snapshot observation metadata.
@@ -13,6 +21,9 @@
 
 ### Changed
 
+- Parser Blueprint canonical ordering is locale-independent and treats missing numeric ordering metadata as missing rather than zero.
+- Blueprint request-body analysis retains structural schema metadata rather than raw payload values.
+- Raw session export remains separate from derived Parser Blueprint artifacts.
 - External source deduplication now preserves observations from every document/frame without duplicating the fetched source body.
 - Subframe navigation is retained in documents and timeline evidence without changing canonical top-level session ownership.
 - First-party source-fetch authorization remains anchored to the top-level page even when a source is discovered inside a cross-origin iframe.
@@ -27,6 +38,9 @@
 
 ### Tests
 
+- Added deterministic Parser Blueprint transport, workflow, forms, state-carrier, signal, Markdown, and side-panel integration coverage.
+- Added end-to-end acceptance fixtures for API/XHR, classic form POST plus navigation, dynamic hidden/view-state fields, analytics plus protection, load-balancer affinity metadata, and canonical ordering.
+- Added regression coverage that Parser Blueprint exports refresh stale same-session derivations.
 - Added PerimeterX regressions for opaque `Px3` text and explicit cookie/header/URL evidence.
 - Added frame-aware document and navigation ownership tests.
 - Added cross-frame correlation regressions.

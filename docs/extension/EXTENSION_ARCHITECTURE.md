@@ -144,6 +144,7 @@ Key responsibilities:
 - candidate correlation;
 - anti-bot state/analysis;
 - diagnostics and runtime search;
+- deterministic Parser Blueprint derivation and Markdown rendering;
 - tab cleanup.
 
 The service worker never treats `agent-status` as authority over whether the BRT run exists. `session.running` and `runState`
@@ -188,6 +189,23 @@ correlation primitives.
 Passive classification/analysis only. These modules identify and summarize challenge/anti-bot-related evidence already visible
 through normal browser observation. They do not solve challenges, replay tokens, spoof browser identity, or bypass controls.
 
+### `src/parser-blueprint.js` and `src/parser-blueprint-markdown.js`
+
+`parser-blueprint.js` is the deterministic post-session inference layer. It consumes retained session evidence and produces a structured `ParserBlueprint` without mutating or replacing the raw session.
+
+It derives:
+
+- API-driven, document-driven, mixed, or unknown transport models;
+- ordered form/network/navigation workflow steps;
+- endpoint-family and schema-only request-body metadata;
+- form-field stability, visibility, generated-name, and probable state-role classifications;
+- observable state carriers such as cookies and hidden form fields;
+- separated protection, analytics, infrastructure, and unknown signals;
+- evidence-backed parser implications.
+
+Every nontrivial derived conclusion retains evidence references and confidence/provenance rather than becoming an unsupported implementation claim.
+
+`parser-blueprint-markdown.js` is a deterministic renderer over that structured model. It does not inspect the live page or perform additional network activity.
 ### `ui/*`
 
 The side panel is a consumer of the service-worker session model. It does not own capture state.
@@ -276,6 +294,33 @@ source was seen. This avoids duplicate source bodies without erasing provenance.
 The source-fetch security boundary is still the canonical top-level page URL. A cross-origin iframe may contribute source
 metadata and frame provenance, but its URL does not silently authorize third-party extension-origin fetching.
 
+## Parser Blueprint derivation
+
+Parser Blueprint is derived explicitly from the authoritative retained session:
+
+```text
+retained session
+      |
+      +--> existing raw session export
+      |
+      v
+generateParserBlueprint(session)
+      |
+      v
+ParserBlueprint
+      |
+      +--> JSON export
+      +--> deterministic Markdown renderer
+      `--> side-panel Blueprint view
+```
+
+The derived Blueprint is not persisted into the raw schema and does not change session import/export compatibility.
+
+The side panel requests Blueprint generation explicitly through the service worker. The normal periodic session refresh does not continuously execute the inference pipeline.
+
+Workflow relationships use evidence-honest language. For example, a hard navigation immediately observed after a form submission is represented as `observed-after-form-submit`; this records ordering and evidence without asserting proven JavaScript/network causation.
+
+Request-body analysis is schema-oriented. Object keys, form field names, structural type, provenance, and confidence may be retained, while source payload values are not copied into the derived Blueprint.
 ## Capture modes and CDP state
 
 The requested mode and effective mode are intentionally separate.
