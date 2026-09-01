@@ -2,7 +2,7 @@ import { LIMITS, trimText, sanitizeUrl } from './shared.js';
 import {
   ensureStorageStats, rebuildStorageStats, trackedPush, trackedReplace, removeTrackedAt, adjustTrackedBucketBytes,
   pushTimelineTracked, ensureDocument, resolveCanonicalDocumentId, minimalEventEnvelope,
-  normalizeModeState, setCdpState, buildDomNetworkCorrelation, applyCommittedNavigation,
+  normalizeModeState, setCdpState, buildDomNetworkCorrelation, findLatestCompatibleDomEvent, applyCommittedNavigation,
   resolveSourceFrameContext, recordSourceObservation, commandTargetOptions,
   recordDocumentSnapshotObservation
 } from './session-utils.js';
@@ -1012,7 +1012,11 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
   }
 
   if (canonical.kind === 'network-request' && canonical.data?.classification !== 'analytics' && (canonical.data?.firstParty !== false || canonical.data?.classification === 'anti-bot-signal')) {
-    const interaction = [...session.timeline].reverse().find(item => item.kind === 'dom-event' && item.data?.isTrusted === true);
+    const interaction =
+      findLatestCompatibleDomEvent(
+        session.timeline,
+        canonical
+      );
     const relationship = buildDomNetworkCorrelation(interaction, { ...canonical, label: timelineLabel(canonical) });
     if (relationship && !session.correlations.some(item => item.fromEventId === relationship.fromEventId && item.toEventId === relationship.toEventId)) {
       pushCapped(session.correlations, relationship, 500);
@@ -1439,7 +1443,7 @@ chrome.webNavigation?.onCommitted?.addListener(async details => {
   pushTimeline(session, hardNavigation);
 
   if (
-    isTopFrame &&
+    navigation.isTopFrame &&
     session.captureSettings?.antibot === true
   ) {
     session.antiBot =

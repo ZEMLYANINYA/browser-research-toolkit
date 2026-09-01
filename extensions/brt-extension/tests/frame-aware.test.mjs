@@ -922,7 +922,77 @@ test('subframe navigation cannot mutate top-level anti-bot lifecycle', () => {
 
   assert.match(
     background,
-    /isTopFrame\s*&&\s*session\.captureSettings\?\.antibot === true/,
+    /navigation\.isTopFrame\s*&&\s*session\.captureSettings\?\.antibot === true/,
     'browser-controlled hard navigation must update anti-bot lifecycle only for the top frame'
+  );
+});
+
+
+test('latest compatible DOM event skips newer activity from another frame', async () => {
+  const utils = await import('../src/session-utils.js');
+
+  assert.equal(
+    typeof utils.findLatestCompatibleDomEvent,
+    'function',
+    'findLatestCompatibleDomEvent must exist'
+  );
+
+  const timeline = [
+    {
+      eventId: 'evt-top-click',
+      sequence: 10,
+      kind: 'dom-event',
+      sessionId: 'session-1',
+      documentId: 'document-top',
+      frameId: 0,
+      wallTime: 1000,
+      data: {
+        isTrusted: true
+      }
+    },
+    {
+      eventId: 'evt-child-click',
+      sequence: 11,
+      kind: 'dom-event',
+      sessionId: 'session-1',
+      documentId: 'document-child',
+      frameId: 7,
+      wallTime: 1050,
+      data: {
+        isTrusted: true
+      }
+    }
+  ];
+
+  const request = {
+    eventId: 'evt-top-fetch',
+    sequence: 12,
+    kind: 'network-request',
+    sessionId: 'session-1',
+    documentId: 'document-top',
+    frameId: 0,
+    wallTime: 1100,
+    data: {
+      url: 'https://example.test/api'
+    }
+  };
+
+  const interaction =
+    utils.findLatestCompatibleDomEvent(
+      timeline,
+      request
+    );
+
+  assert.ok(interaction);
+  assert.equal(
+    interaction.eventId,
+    'evt-top-click'
+  );
+
+  assert.ok(
+    utils.buildDomNetworkCorrelation(
+      interaction,
+      request
+    )
   );
 });

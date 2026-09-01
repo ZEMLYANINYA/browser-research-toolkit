@@ -623,6 +623,80 @@ export function normalizeModeState(session) {
   return setCdpState(session, state);
 }
 
+export function findLatestCompatibleDomEvent(
+  timeline,
+  request
+) {
+  if (!Array.isArray(timeline) || !request) {
+    return null;
+  }
+
+  const requestDocumentId =
+    typeof request.documentId === 'string' &&
+    request.documentId &&
+    request.documentId !== 'unknown'
+      ? request.documentId
+      : null;
+
+  const requestFrameId =
+    Number.isInteger(request.frameId) &&
+    request.frameId >= 0
+      ? request.frameId
+      : null;
+
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const item = timeline[index];
+
+    if (
+      item?.kind !== 'dom-event' ||
+      item.data?.isTrusted !== true
+    ) {
+      continue;
+    }
+
+    if (
+      request.sessionId &&
+      item.sessionId &&
+      item.sessionId !== request.sessionId
+    ) {
+      continue;
+    }
+
+    const itemDocumentId =
+      typeof item.documentId === 'string' &&
+      item.documentId &&
+      item.documentId !== 'unknown'
+        ? item.documentId
+        : null;
+
+    const itemFrameId =
+      Number.isInteger(item.frameId) &&
+      item.frameId >= 0
+        ? item.frameId
+        : null;
+
+    if (
+      requestDocumentId !== null &&
+      itemDocumentId !== null &&
+      itemDocumentId !== requestDocumentId
+    ) {
+      continue;
+    }
+
+    if (
+      requestFrameId !== null &&
+      itemFrameId !== null &&
+      itemFrameId !== requestFrameId
+    ) {
+      continue;
+    }
+
+    return item;
+  }
+
+  return null;
+}
+
 export function buildDomNetworkCorrelation(interaction, request, { maxSequenceGap = 8, maxWallTimeMs = 1500 } = {}) {
   if (!interaction || !request) return null;
   if (interaction.kind !== 'dom-event' || request.kind !== 'network-request') return null;
