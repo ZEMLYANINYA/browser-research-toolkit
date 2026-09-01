@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>BRT Frame-Aware Top</title>
+  <style>
+    body { font-family: sans-serif; margin: 24px; }
+    iframe { width: 90%; height: 260px; border: 3px solid #555; }
+  </style>
+</head>
+<body>
+  <h1 id="top-marker">BRT TOP FRAME</h1>
+
+  <script>
+    window.__BRT_TOP_FIXTURE__ = {
+      role: 'top',
+      marker: 'top-inline'
+    };
+  </script>
+
+  <script src="/shared.js"></script>
+
+  <iframe
+    id="child-frame"
+    src="http://127.0.0.2:8124/frame.html"
+    title="BRT child frame">
+  </iframe>
+</body>
+</html>

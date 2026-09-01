@@ -911,7 +911,15 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
   if (session.captureSettings?.antibot === true) {
     session.antiBot = ensureAntiBotState(session.antiBot, true);
     if (canonical.kind === 'agent-status' && canonical.frameId === 0) recordAntiBotAgentStatus(session.antiBot, canonical);
-    if (canonical.kind === 'navigation') recordAntiBotNavigation(session.antiBot, canonical);
+    if (
+      canonical.kind === 'navigation' &&
+      canonical.frameId === 0
+    ) {
+      recordAntiBotNavigation(
+        session.antiBot,
+        canonical
+      );
+    }
     const antiBotClassification = classifyAntiBotRecord(canonical);
     if (antiBotClassification.isAntiBotSignal) {
       canonical.data = {
@@ -1430,9 +1438,17 @@ chrome.webNavigation?.onCommitted?.addListener(async details => {
 
   pushTimeline(session, hardNavigation);
 
-  if (session.captureSettings?.antibot === true) {
-    session.antiBot = ensureAntiBotState(session.antiBot, true);
-    recordAntiBotNavigation(session.antiBot, hardNavigation);
+  if (
+    isTopFrame &&
+    session.captureSettings?.antibot === true
+  ) {
+    session.antiBot =
+      ensureAntiBotState(session.antiBot, true);
+
+    recordAntiBotNavigation(
+      session.antiBot,
+      hardNavigation
+    );
   }
 
   scheduleFlush(details.tabId);

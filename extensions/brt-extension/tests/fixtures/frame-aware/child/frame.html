@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>BRT Frame-Aware Child</title>
+</head>
+<body>
+  <h2 id="child-marker">BRT CHILD FRAME</h2>
+
+  <button id="child-action">
+    Mutate child DOM
+  </button>
+
+  <button id="child-navigate">
+    Navigate child frame
+  </button>
+
+  <script>
+    window.__BRT_CHILD_FIXTURE__ = {
+      role: 'child',
+      marker: 'child-inline'
+    };
+  </script>
+
+  <script src="http://127.0.0.1:8123/shared.js"></script>
+  <script src="/child-only.js"></script>
+
+  <script>
+    document
+      .getElementById('child-action')
+      .addEventListener('click', () => {
+        const node = document.createElement('div');
+        node.className = 'child-generated';
+        node.textContent = 'child mutation ' + Date.now();
+        document.body.appendChild(node);
+      });
+
+    document
+      .getElementById('child-navigate')
+      .addEventListener('click', () => {
+        location.href = '/frame-2.html';
+      });
+  </script>
+</body>
+</html>

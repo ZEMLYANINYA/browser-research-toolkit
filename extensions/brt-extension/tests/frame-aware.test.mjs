@@ -906,3 +906,23 @@ test('background records snapshot metadata for every frame before top-level owne
     'runtime snapshot metadata must be recorded before the top-frame guard'
   );
 });
+
+
+test('subframe navigation cannot mutate top-level anti-bot lifecycle', () => {
+  const background = fs.readFileSync(
+    new URL('../src/background.js', import.meta.url),
+    'utf8'
+  );
+
+  assert.match(
+    background,
+    /canonical\.kind === 'navigation'\s*&&\s*canonical\.frameId === 0/,
+    'page-agent navigation must update anti-bot lifecycle only for frame 0'
+  );
+
+  assert.match(
+    background,
+    /isTopFrame\s*&&\s*session\.captureSettings\?\.antibot === true/,
+    'browser-controlled hard navigation must update anti-bot lifecycle only for the top frame'
+  );
+});
