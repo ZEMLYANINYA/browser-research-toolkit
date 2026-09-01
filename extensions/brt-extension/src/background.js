@@ -2,7 +2,9 @@ import { LIMITS, trimText, sanitizeUrl } from './shared.js';
 import {
   ensureStorageStats, rebuildStorageStats, trackedPush, trackedReplace, removeTrackedAt, adjustTrackedBucketBytes,
   pushTimelineTracked, ensureDocument, resolveCanonicalDocumentId, minimalEventEnvelope,
-  normalizeModeState, setCdpState, buildDomNetworkCorrelation
+  normalizeModeState, setCdpState, buildDomNetworkCorrelation, findLatestCompatibleDomEvent, applyCommittedNavigation,
+  resolveSourceFrameContext, recordSourceObservation, commandTargetOptions,
+  recordDocumentSnapshotObservation
 } from './session-utils.js';
 import {
   classifyAntiBotRecord, createAntiBotState, ensureAntiBotState, recordAntiBotAgentStatus,
@@ -19,6 +21,7 @@ const generationCounters = new Map();
 const sessionLoads = new Map();
 const flushStates = new Map();
 const pendingSourceTasks = new Map();
+const pendingSourceObservations = new Map();
 const taskAccounting = new Map();
 const antiBotAnalysisCache = new Map();
 
@@ -543,34 +546,157 @@ function indexExternalSource(tabId, payload) {
   const session = sessions.get(tabId);
   const sourceUrl = payload.data?.rawUrl || payload.data?.url || '';
   const shownUrl = sanitizeUrl(sourceUrl);
+
   if (!session || !sourceUrl || !shownUrl) return null;
-  if (session.sources.some(source => source.url === shownUrl)) return null;
-  const dedupeKey = `${tabId}:${session.sessionId}:${shownUrl}`;
-  const pending = pendingSourceTasks.get(dedupeKey);
-  if (pending) return pending;
-  const operation = taskRunner.run({
-    name: 'source-index', tabId, runId: session.runId || null, timeoutMs: 12_000,
-    rateKey: rateKeyForUrl(sourceUrl, 'source'),
-    rateLimit: { minIntervalMs: 200, maxConcurrent: 2, maxQueue: 40 },
-    maxAttempts: 1, metadata: { url: shownUrl },
-    execute: ({ signal }) => collectExternalSource(tabId, payload, signal)
+
+  const sourceFrame =
+    resolveSourceFrameContext(session, payload);
+
+  const observedAt = Date.now();
+
+  /*
+   * The source body is URL-deduplicated, but observing the same
+   * source from another frame is still evidence worth retaining.
+   */
+  const existingSource =
+    session.sources.find(source => source.url === shownUrl);
+
+  if (existingSource) {
+    recordSourceObservation(
+      existingSource,
+      sourceFrame,
+      observedAt
+    );
+
+    /*
+     * recordSourceObservation mutates a retained source in place,
+     * so refresh byte accounting before persistence.
+     */
+    rebuildStorageStats(session);
+    session.updatedAt = observedAt;
+    scheduleFlush(tabId);
+
+    return null;
+  }
+
+  const dedupeKey =
+    `${tabId}:${session.sessionId}:${shownUrl}`;
+
+  let observations =
+    pendingSourceObservations.get(dedupeKey);
+
+  if (!observations) {
+    observations = [];
+    pendingSourceObservations.set(
+      dedupeKey,
+      observations
+    );
+  }
+
+  observations.push({
+    ...sourceFrame,
+    observedAt
   });
-  pendingSourceTasks.set(dedupeKey, operation);
+
+  /*
+   * Bound temporary provenance even if a page emits the same
+   * source-url event unusually often while the fetch is pending.
+   */
+  if (observations.length > 500) {
+    observations.splice(
+      0,
+      observations.length - 500
+    );
+  }
+
+  const pending =
+    pendingSourceTasks.get(dedupeKey);
+
+  if (pending) return pending;
+
+  const operation = taskRunner.run({
+    name: 'source-index',
+    tabId,
+    runId: session.runId || null,
+    timeoutMs: 12_000,
+    rateKey: rateKeyForUrl(sourceUrl, 'source'),
+    rateLimit: {
+      minIntervalMs: 200,
+      maxConcurrent: 2,
+      maxQueue: 40
+    },
+    maxAttempts: 1,
+    metadata: { url: shownUrl },
+    execute: ({ signal }) =>
+      collectExternalSource(tabId, payload, signal)
+  });
+
+  pendingSourceTasks.set(
+    dedupeKey,
+    operation
+  );
+
   operation.finally(() => {
-    if (pendingSourceTasks.get(dedupeKey) === operation) pendingSourceTasks.delete(dedupeKey);
+    if (
+      pendingSourceTasks.get(dedupeKey) === operation
+    ) {
+      pendingSourceTasks.delete(dedupeKey);
+      pendingSourceObservations.delete(dedupeKey);
+    }
   }).catch(() => {});
+
   operation.catch(() => {});
+
   return operation;
 }
 
 async function collectExternalSource(tabId, payload, taskSignal = null) {
   const session = await loadSession(tabId);
+  const sourceFrame =
+    resolveSourceFrameContext(session, payload);
+
   const capturedSessionId = session.sessionId;
   const capturedGeneration = session.generation;
   const rawUrl = payload.data?.rawUrl;
   const shownUrl = sanitizeUrl(payload.data?.url || rawUrl);
   if (!rawUrl) return;
-  if (session.sources.some(source => source.url === shownUrl)) return;
+
+  const dedupeKey =
+    `${tabId}:${session.sessionId}:${shownUrl}`;
+
+  const attachPendingSourceObservations = source => {
+    const pending =
+      pendingSourceObservations.get(dedupeKey);
+
+    const observations =
+      Array.isArray(pending) && pending.length
+        ? pending
+        : [{
+            ...sourceFrame,
+            observedAt: Date.now()
+          }];
+
+    for (const observation of observations) {
+      recordSourceObservation(
+        source,
+        observation,
+        observation.observedAt
+      );
+    }
+
+    return source;
+  };
+
+  const existingSource =
+    session.sources.find(source => source.url === shownUrl);
+
+  if (existingSource) {
+    attachPendingSourceObservations(existingSource);
+    rebuildStorageStats(session);
+    session.updatedAt = Date.now();
+    scheduleFlush(tabId);
+    return;
+  }
 
   let timeout = null;
   let abortTask = null;
@@ -592,10 +718,13 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
       const classification = /analytics|telemetry|pixel|collect|gtag|pagead|doubleclick/i.test(shownUrl)
         ? 'analytics'
         : sourcePolicy.classification;
-      const removed = trackedPush(session, 'sources', {
+      const sourceRecord = attachPendingSourceObservations({
         id: `src_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
         type: 'external-script',
         url: shownUrl,
+        documentId: sourceFrame.documentId,
+        frameId: sourceFrame.frameId,
+        documentUrl: sourceFrame.documentUrl,
         label: shownUrl,
         status: null,
         text: '',
@@ -607,7 +736,14 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
         bytesRead: 0,
         staticFindings: [],
         fetchPolicy: { decision: 'blocked', reason: sourcePolicy.reason }
-      }, LIMITS.maxSources, 'source');
+      });
+      const removed = trackedPush(
+        session,
+        'sources',
+        sourceRecord,
+        LIMITS.maxSources,
+        'source'
+      );
       session.counters.sources = session.sources.length;
       if (removed.length) diagnostic(session, 'source-retention-evicted', { count: removed.length });
       diagnostic(session, 'source-fetch-policy-blocked', { url: shownUrl, reason: sourcePolicy.reason, classification });
@@ -646,10 +782,13 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
       ? rawText.replace(/(authorization|token|secret|password|cookie|csrf|xsrf|api[_-]?key|session(?:id)?|signature)\s*["']?\s*[:=]\s*["']?[^\s,&"'}]+/gi, '$1=[REDACTED]')
       : '';
 
-    const removed = trackedPush(session, 'sources', {
+    const sourceRecord = attachPendingSourceObservations({
       id: sourceId,
       type: 'external-script',
       url: shownUrl,
+      documentId: sourceFrame.documentId,
+      frameId: sourceFrame.frameId,
+      documentUrl: sourceFrame.documentUrl,
       label: shownUrl,
       status: res.status,
       text: sanitizedText,
@@ -660,7 +799,14 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
       truncated: bounded.truncated || bounded.text.length > LIMITS.maxSourceChars,
       bytesRead: bounded.bytesRead,
       staticFindings: includeBody ? staticFindings(rawText, shownUrl) : []
-    }, LIMITS.maxSources, 'source');
+    });
+    const removed = trackedPush(
+      session,
+      'sources',
+      sourceRecord,
+      LIMITS.maxSources,
+      'source'
+    );
     session.counters.sources = session.sources.length;
     if (removed.length) diagnostic(session, 'source-retention-evicted', { count: removed.length });
     diagnostic(session, bounded.truncated ? 'source-fetch-truncated' : 'source-fetch-success', { url: shownUrl, status: res.status, bytesRead: bounded.bytesRead });
@@ -724,7 +870,7 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
     ? sanitizeUrl(senderObservedUrl || session.pageUrl || '')
     : sanitizeUrl(senderObservedUrl || reportedPageUrl || session.pageUrl || '');
   if (pageObservable && canonical.frameId === 0 && senderObservedUrl) session.pageUrl = senderObservedUrl;
-  if (canonical.kind === 'agent-status') {
+  if (canonical.kind === 'agent-status' && canonical.frameId === 0) {
     session.agentActive = Boolean(canonical.data?.active);
     session.agentStatusAt = Date.now();
     if (!session.stopRequested && session.agentActive !== session.running) {
@@ -764,8 +910,16 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
 
   if (session.captureSettings?.antibot === true) {
     session.antiBot = ensureAntiBotState(session.antiBot, true);
-    if (canonical.kind === 'agent-status') recordAntiBotAgentStatus(session.antiBot, canonical);
-    if (canonical.kind === 'navigation') recordAntiBotNavigation(session.antiBot, canonical);
+    if (canonical.kind === 'agent-status' && canonical.frameId === 0) recordAntiBotAgentStatus(session.antiBot, canonical);
+    if (
+      canonical.kind === 'navigation' &&
+      canonical.frameId === 0
+    ) {
+      recordAntiBotNavigation(
+        session.antiBot,
+        canonical
+      );
+    }
     const antiBotClassification = classifyAntiBotRecord(canonical);
     if (antiBotClassification.isAntiBotSignal) {
       canonical.data = {
@@ -784,11 +938,24 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
     }
   }
 
-  if (canonical.kind === 'html-snapshot') {
+  if (
+    canonical.kind === 'html-snapshot' ||
+    canonical.kind === 'runtime-snapshot'
+  ) {
+    recordDocumentSnapshotObservation(
+      session,
+      canonical,
+      Number.isFinite(canonical.wallTime)
+        ? canonical.wallTime
+        : Date.now()
+    );
+  }
+
+  if (canonical.kind === 'html-snapshot' && canonical.frameId === 0) {
     trackedReplace(session, 'html', trimText(canonical.data?.text || '', LIMITS.maxHtmlChars), 'html');
-  } else if (canonical.kind === 'runtime-snapshot') {
+  } else if (canonical.kind === 'runtime-snapshot' && canonical.frameId === 0) {
     trackedReplace(session, 'runtime', (canonical.data?.entries || []).slice(0, LIMITS.maxRuntimeEntries), 'runtime');
-  } else if (canonical.kind === 'runtime-watch') {
+  } else if (canonical.kind === 'runtime-watch' && canonical.frameId === 0) {
     const path = canonical.data?.path;
     if (path) {
       const previous = session.watches[path];
@@ -800,14 +967,28 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
       };
     }
   } else if (canonical.kind === 'source-inline') {
-    const text = trimText(canonical.data?.text || '', LIMITS.maxSourceChars);
+    const sourceFrame =
+      resolveSourceFrameContext(session, canonical);
+
+    const text = trimText(
+      canonical.data?.text || '',
+      LIMITS.maxSourceChars
+    );
     const contentHash = await sha256Text(text);
     trackedPush(session, 'sources', {
       id: `src_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
-      type: 'inline-script', url: session.pageUrl,
+      type: 'inline-script',
+      url: sourceFrame.documentUrl || session.pageUrl,
+      documentId: sourceFrame.documentId,
+      frameId: sourceFrame.frameId,
+      documentUrl: sourceFrame.documentUrl,
       label: canonical.data?.label || 'inline script',
       text: text.replace(/(authorization|token|secret|password|cookie|csrf|xsrf|api[_-]?key|session(?:id)?|signature)\s*["']?\s*[:=]\s*["']?[^\s,&"'}]+/gi, '$1=[REDACTED]'),
-      contentHash, staticFindings: staticFindings(text, session.pageUrl)
+      contentHash,
+      staticFindings: staticFindings(
+        text,
+        sourceFrame.documentUrl || session.pageUrl
+      )
     }, LIMITS.maxSources, 'source');
     session.counters.sources = session.sources.length;
   } else if (canonical.kind === 'source-url') {
@@ -831,7 +1012,11 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
   }
 
   if (canonical.kind === 'network-request' && canonical.data?.classification !== 'analytics' && (canonical.data?.firstParty !== false || canonical.data?.classification === 'anti-bot-signal')) {
-    const interaction = [...session.timeline].reverse().find(item => item.kind === 'dom-event' && item.data?.isTrusted === true);
+    const interaction =
+      findLatestCompatibleDomEvent(
+        session.timeline,
+        canonical
+      );
     const relationship = buildDomNetworkCorrelation(interaction, { ...canonical, label: timelineLabel(canonical) });
     if (relationship && !session.correlations.some(item => item.fromEventId === relationship.fromEventId && item.toEventId === relationship.toEventId)) {
       pushCapped(session.correlations, relationship, 500);
@@ -864,12 +1049,30 @@ async function injectAgent(tabId) {
   });
 }
 
-async function sendCommand(tabId, command, generation = undefined, data = undefined) {
+async function sendCommand(
+  tabId,
+  command,
+  generation = undefined,
+  data = undefined
+) {
+  const targetOptions =
+    commandTargetOptions(command);
+
   try {
-    await chrome.tabs.sendMessage(tabId, { type: 'BRT_EXTENSION_COMMAND', payload: { command, generation, runId: sessions.get(tabId)?.runId || null, ...data } });
-  } catch {
-    // Content script may not exist on unsupported pages.
-  }
+    await chrome.tabs.sendMessage(
+      tabId,
+      {
+        type: 'BRT_EXTENSION_COMMAND',
+        payload: {
+          command,
+          generation,
+          runId: sessions.get(tabId)?.runId || null,
+          ...data
+        }
+      },
+      targetOptions
+    );
+  } catch {}
 }
 
 function sessionGeneration(tabId) {
@@ -1184,22 +1387,74 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.webNavigation?.onCommitted?.addListener(async details => {
-  if (details.frameId !== 0) return;
   const session = await loadSession(details.tabId);
   if (!session.running || !session.preserveSession || session.importedReadOnly) return;
+
   const safeUrl = sanitizeUrl(details.url);
-  const documentId = details.documentId || `document_${Date.now()}`;
-  session.pageUrl = safeUrl;
+  const committedAt = Date.now();
+
+  const navigation = applyCommittedNavigation(session, {
+    documentId: details.documentId,
+    url: safeUrl,
+    frameId: details.frameId,
+    parentFrameId: details.parentFrameId,
+    parentDocumentId: details.parentDocumentId,
+    frameType: details.frameType,
+    documentLifecycle: details.documentLifecycle,
+    transitionType: details.transitionType,
+    firstSeen: committedAt
+  });
+
   antiBotAnalysisCache.delete(details.tabId);
-  session.activeDocumentId = documentId;
-  ensureDocument(session, { documentId, url: safeUrl, firstSeen: Date.now(), transitionType: details.transitionType, frameId: details.frameId });
   session.counters.navigations += 1;
-  const hardNavigation = { kind: 'hard-navigation', eventId: `evt_${Date.now().toString(36)}_${++session.sequence}`, sessionId: session.sessionId, sequence: session.sequence, wallTime: Date.now(), monotonicTime: null, documentId, label: `document ${safeUrl}`, data: { documentId, url: safeUrl, transitionType: details.transitionType }, provenance: { collector: 'chrome.webNavigation', transport: 'chrome.webNavigation', integrity: 'browser-controlled' } };
+
+  const hardNavigation = {
+    kind: 'hard-navigation',
+    eventId: `evt_${Date.now().toString(36)}_${++session.sequence}`,
+    sessionId: session.sessionId,
+    sequence: session.sequence,
+    wallTime: committedAt,
+    monotonicTime: null,
+
+    documentId: navigation.documentId,
+    frameId: navigation.frameId,
+
+    label: `${navigation.isTopFrame ? 'document' : 'subframe'} ${safeUrl}`,
+
+    data: {
+      documentId: navigation.documentId,
+      url: safeUrl,
+      transitionType: details.transitionType,
+      frameId: navigation.frameId,
+      parentFrameId: details.parentFrameId,
+      parentDocumentId: details.parentDocumentId,
+      frameType: details.frameType,
+      documentLifecycle: details.documentLifecycle,
+      isTopFrame: navigation.isTopFrame
+    },
+
+    provenance: {
+      collector: 'chrome.webNavigation',
+      transport: 'chrome.webNavigation',
+      integrity: 'browser-controlled'
+    }
+  };
+
   pushTimeline(session, hardNavigation);
-  if (session.captureSettings?.antibot === true) {
-    session.antiBot = ensureAntiBotState(session.antiBot, true);
-    recordAntiBotNavigation(session.antiBot, hardNavigation);
+
+  if (
+    navigation.isTopFrame &&
+    session.captureSettings?.antibot === true
+  ) {
+    session.antiBot =
+      ensureAntiBotState(session.antiBot, true);
+
+    recordAntiBotNavigation(
+      session.antiBot,
+      hardNavigation
+    );
   }
+
   scheduleFlush(details.tabId);
 });
 

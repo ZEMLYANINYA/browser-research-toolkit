@@ -65,8 +65,8 @@ independent version lines.
 
 ### `manifest.json`
 
-Defines the MV3 service worker, side panel, top-frame MAIN-world page agent, isolated content bridge, required permissions, and
-repository homepage.
+Defines the MV3 service worker, side panel, all-frame MAIN-world page agent, isolated content bridge, required permissions,
+and repository homepage.
 
 ### `src/page-agent.js`
 
@@ -96,6 +96,9 @@ All events emitted by this component carry:
 - performance timing metadata when available;
 - document identity;
 - bounded/redacted data.
+
+Frame identity reported by MAIN-world code is not authoritative. Chrome runtime sender metadata and
+`chrome.webNavigation` metadata are used by the service worker to canonicalize frame/document provenance.
 
 ### `src/content-bridge.js`
 
@@ -136,6 +139,7 @@ Key responsibilities:
 - TaskRunner integration;
 - CDP attach/detach and event capture;
 - evidence canonicalization;
+- frame/document provenance and navigation ownership;
 - network classification;
 - candidate correlation;
 - anti-bot state/analysis;
@@ -175,8 +179,9 @@ into exports.
 
 ### `src/session-utils.js`
 
-Storage accounting, bounded collection helpers, document normalization, mode/CDP state normalization, and deterministic
-DOM/network correlation primitives.
+Storage accounting, bounded collection helpers, document/frame normalization, frame-aware source observations,
+snapshot-observation metadata, command-target policy, mode/CDP state normalization, and deterministic DOM/network
+correlation primitives.
 
 ### `src/antibot.js` and `src/antibot-analyzer.js`
 
@@ -235,6 +240,42 @@ These are collected through extension APIs rather than page-originated messages 
 
 Hard-navigation records from `chrome.webNavigation` are labeled browser-controlled.
 
+## Frame-aware capture and ownership
+
+The extension injects its MAIN-world page agent and isolated bridge into eligible frames rather than treating the tab as a
+single execution context.
+
+Chrome-controlled sender/navigation metadata defines canonical frame provenance:
+
+```text
+tab
+├── frameId 0      top document
+└── frameId N      iframe document
+        |
+        +-- navigation
+        |
+        └── same frameId, new documentId
+```
+
+A committed iframe navigation therefore creates or updates document evidence for the subframe without redefining the
+top-level session.
+
+Top-level ownership remains intentionally narrow:
+
+- `session.pageUrl` and `activeDocumentId` belong to frame 0.
+- Full `session.html` and `session.runtime` remain frame-0-owned.
+- Subframes retain lightweight per-document HTML/runtime snapshot metadata instead of replacing the global snapshots.
+- Global agent/anti-bot lifecycle state is frame-0-owned.
+- Subframe navigation remains visible in documents, counters, and timeline evidence.
+- Capture lifecycle commands are tab-wide so every injected frame can start, stop, and refresh.
+- Explicit runtime watch commands remain targeted to frame 0.
+
+External sources are deduplicated by canonical source URL, while `observations[]` retains every document/frame in which the
+source was seen. This avoids duplicate source bodies without erasing provenance.
+
+The source-fetch security boundary is still the canonical top-level page URL. A cross-origin iframe may contribute source
+metadata and frame provenance, but its URL does not silently authorize third-party extension-origin fetching.
+
 ## Capture modes and CDP state
 
 The requested mode and effective mode are intentionally separate.
@@ -272,10 +313,14 @@ source-url event
 isolated bridge verifies URL is observed in document.scripts
         |
         v
-service worker schedules rate-limited source-index task
+service worker resolves frame/document context
         |
         v
-source-policy.js evaluates URL BEFORE fetch
+existing source -> append frame observation
+new source      -> schedule rate-limited source-index task
+        |
+        v
+source-policy.js evaluates URL against top-level page boundary BEFORE fetch
         |
         +-- blocked -> metadata-only source + diagnostic
         |
@@ -284,8 +329,9 @@ source-policy.js evaluates URL BEFORE fetch
 
 ## Correlation model
 
-Correlation records are candidates, not claims of causation. DOM/network relationships require matching session/document
-identity and temporal/sequence proximity. The UI permits manual labeling as `related` or `not-related`.
+Correlation records are candidates, not claims of causation. DOM/network relationships require compatible
+session/document/frame identity and temporal/sequence proximity. Known cross-frame candidates are rejected rather than
+collapsed into the same execution context. The UI permits manual labeling as `related` or `not-related`.
 
 Evidence provenance should be considered when interpreting confidence.
 

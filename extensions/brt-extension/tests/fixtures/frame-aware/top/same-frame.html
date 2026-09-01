@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>BRT Same-Origin Frame</title>
+</head>
+<body>
+  <h2>BRT SAME ORIGIN FRAME</h2>
+
+  <button id="same-fetch">
+    Fetch frame data
+  </button>
+
+  <script>
+    document
+      .getElementById('same-fetch')
+      .addEventListener('click', async () => {
+        const response = await fetch('/frame-data.json');
+        const data = await response.json();
+
+        const node = document.createElement('pre');
+        node.id = 'fetch-result';
+        node.textContent = JSON.stringify(data);
+        document.body.appendChild(node);
+      });
+  </script>
+</body>
+</html>
