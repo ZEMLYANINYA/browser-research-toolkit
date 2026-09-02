@@ -117,6 +117,13 @@ export class XhrInterceptor implements Interceptor {
         return originalSend.call(this, body as never);
       }
 
+      // A second send() while the first request is still in flight must be
+      // handled by the native XHR implementation. Do not record it again or
+      // replace the terminal listeners belonging to the active request.
+      if (cleanupByXhr.has(this)) {
+        return originalSend.call(this, body as never);
+      }
+
       requestData.body =
         ctx.sanitizer.sanitizeBody(body, requestData.url);
 
@@ -129,8 +136,6 @@ export class XhrInterceptor implements Interceptor {
       );
 
       const id = requestData.id;
-
-      cleanupByXhr.get(this)?.();
 
       let settled = false;
 

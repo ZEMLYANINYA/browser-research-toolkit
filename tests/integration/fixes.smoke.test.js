@@ -714,6 +714,114 @@ test('XHR retries from error or timeout are not finalized as successful loads', 
   }
 });
 
+test('XHR duplicate send preserves the first in-flight request lifecycle', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const proto = window.XMLHttpRequest.prototype;
+  const nativeSend = proto.send;
+
+  let sendCalls = 0;
+
+  // Model native XHR behavior:
+  // the first send starts successfully, while a second send on the same
+  // in-flight request throws InvalidStateError.
+  proto.send = function () {
+    sendCalls++;
+
+    if (sendCalls > 1) {
+      throw new window.DOMException(
+        'The object is in an invalid state.',
+        'InvalidStateError',
+      );
+    }
+  };
+
+  let collector;
+
+  try {
+    const { ResearchCollector } = await import('../../dist/collector.js');
+    collector = new ResearchCollector({ logLevel: 'error' });
+
+    const xhr = new window.XMLHttpRequest();
+
+    let syntheticStatus = 0;
+    let syntheticStatusText = '';
+
+    Object.defineProperty(xhr, 'status', {
+      configurable: true,
+      get: () => syntheticStatus,
+    });
+
+    Object.defineProperty(xhr, 'statusText', {
+      configurable: true,
+      get: () => syntheticStatusText,
+    });
+
+    xhr.open(
+      'GET',
+      'https://example.test/api/duplicate-send',
+    );
+
+    xhr.send();
+
+    assert.throws(
+      () => xhr.send(),
+      (error) => error?.name === 'InvalidStateError',
+      'duplicate send should surface the native InvalidStateError',
+    );
+
+    syntheticStatus = 200;
+    syntheticStatusText = 'OK';
+
+    xhr.dispatchEvent(new window.Event('load'));
+
+    const requests = collector.exportData().networkRequests;
+
+    const matching = requests.filter((request) =>
+      request.url.includes('/api/duplicate-send'),
+    );
+
+    assert.equal(
+      matching.length,
+      1,
+      'rejected duplicate send must not record the request twice',
+    );
+
+    assert.equal(
+      matching[0].status,
+      200,
+      'first in-flight request must retain its completion listener',
+    );
+
+    assert.equal(
+      matching[0].statusText,
+      'OK',
+      'first in-flight request must retain response metadata',
+    );
+  } finally {
+    collector?.cleanup();
+
+    proto.send = nativeSend;
+    global.performance = nativePerformance;
+  }
+});
+
 test('fetch(new Request(url, opts)) preserves method — single-argument form used to lose it', async () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://example.test/page' });
   const { window } = dom;
