@@ -180,6 +180,40 @@ test('XHR constructor preserves native surface for Dynatrace-style prototype cal
       },
       'Dynatrace-style XMLHttpRequest.prototype.open.apply(xhr, args) should work',
     );
+
+    window.XMLHttpRequest.prototype.setRequestHeader.apply(xhr, [
+      'X-Prototype-Trace',
+      'prototype-123',
+    ]);
+
+    try {
+      window.XMLHttpRequest.prototype.send.apply(xhr, [null]);
+      xhr.abort();
+    } catch {
+      // jsdom may reject the synthetic network request; capture is synchronous.
+    }
+
+    const requests = collector.exportData().networkRequests;
+    const recorded = requests.find((request) =>
+      request.url.includes('/api/dynatrace-style'),
+    );
+
+    assert.ok(
+      recorded,
+      'prototype-based XHR calls should still be captured',
+    );
+
+    assert.equal(
+      recorded.method,
+      'GET',
+      'prototype-based open should preserve the request method',
+    );
+
+    assert.equal(
+      recorded.headers?.['X-Prototype-Trace'],
+      'prototype-123',
+      'prototype-based setRequestHeader should remain observable',
+    );
   } finally {
     collector?.cleanup();
 
