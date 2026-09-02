@@ -1508,6 +1508,294 @@ test('XHR successful zero-status completion survives reopen from DONE readystate
   }
 });
 
+test('XHR capture survives prototype calls through an unrelated constructor prototype', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const NativeXHR = window.XMLHttpRequest;
+  const nativeProto = NativeXHR.prototype;
+
+  const cachedOpen = nativeProto.open;
+  const trulyNativeSend = nativeProto.send;
+
+  // Prevent real network I/O while keeping a delegate cached before BRT.
+  nativeProto.send = function () {};
+
+  const unrelatedPrototype = {
+    open(method, url, ...rest) {
+      return Reflect.apply(
+        cachedOpen,
+        this,
+        [method, url, ...rest],
+      );
+    },
+  };
+
+  function PreinstalledXHR() {
+    return new NativeXHR();
+  }
+
+  PreinstalledXHR.prototype =
+    unrelatedPrototype;
+
+  Object.setPrototypeOf(
+    PreinstalledXHR,
+    NativeXHR,
+  );
+
+  window.XMLHttpRequest =
+    PreinstalledXHR;
+
+  let collector;
+
+  try {
+    const { ResearchCollector } =
+      await import('../../dist/collector.js');
+
+    collector = new ResearchCollector({
+      logLevel: 'error',
+    });
+
+    const xhr =
+      new window.XMLHttpRequest();
+
+    window.XMLHttpRequest.prototype.open.apply(
+      xhr,
+      [
+        'POST',
+        'https://example.test/api/unrelated-constructor-prototype',
+      ],
+    );
+
+    xhr.send();
+
+    const requests =
+      collector.exportData().networkRequests;
+
+    const recorded = requests.find(
+      (request) =>
+        request.url.includes(
+          '/api/unrelated-constructor-prototype',
+        ),
+    );
+
+    assert.ok(
+      recorded,
+      'prototype call through the exported unrelated constructor prototype should be captured',
+    );
+
+    assert.equal(
+      recorded.method,
+      'POST',
+    );
+  } finally {
+    collector?.cleanup();
+
+    window.XMLHttpRequest =
+      NativeXHR;
+
+    nativeProto.send =
+      trulyNativeSend;
+
+    global.performance =
+      nativePerformance;
+  }
+});
+
+test('XHR cleanup restores own methods when WeakRef is unavailable', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const NativeXHR = window.XMLHttpRequest;
+  const nativeProto = NativeXHR.prototype;
+
+  const cachedOpen = nativeProto.open;
+  const cachedSetRequestHeader =
+    nativeProto.setRequestHeader;
+
+  const trulyNativeSend =
+    nativeProto.send;
+
+  nativeProto.send = function () {};
+
+  const cachedSend = nativeProto.send;
+
+  let lastOwnOpen;
+  let lastOwnSetRequestHeader;
+  let lastOwnSend;
+
+  function PreinstalledXHR() {
+    const xhr = new NativeXHR();
+
+    lastOwnOpen = function (...args) {
+      return Reflect.apply(
+        cachedOpen,
+        this,
+        args,
+      );
+    };
+
+    lastOwnSetRequestHeader =
+      function (...args) {
+        return Reflect.apply(
+          cachedSetRequestHeader,
+          this,
+          args,
+        );
+      };
+
+    lastOwnSend = function (...args) {
+      return Reflect.apply(
+        cachedSend,
+        this,
+        args,
+      );
+    };
+
+    Object.defineProperties(xhr, {
+      open: {
+        configurable: true,
+        writable: true,
+        value: lastOwnOpen,
+      },
+
+      setRequestHeader: {
+        configurable: true,
+        writable: true,
+        value:
+          lastOwnSetRequestHeader,
+      },
+
+      send: {
+        configurable: true,
+        writable: true,
+        value: lastOwnSend,
+      },
+    });
+
+    return xhr;
+  }
+
+  PreinstalledXHR.prototype =
+    NativeXHR.prototype;
+
+  Object.setPrototypeOf(
+    PreinstalledXHR,
+    NativeXHR,
+  );
+
+  window.XMLHttpRequest =
+    PreinstalledXHR;
+
+  const weakRefDescriptor =
+    Object.getOwnPropertyDescriptor(
+      globalThis,
+      'WeakRef',
+    );
+
+  Object.defineProperty(
+    globalThis,
+    'WeakRef',
+    {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    },
+  );
+
+  let collector;
+
+  try {
+    const { ResearchCollector } =
+      await import('../../dist/collector.js');
+
+    collector = new ResearchCollector({
+      logLevel: 'error',
+    });
+
+    const xhr =
+      new window.XMLHttpRequest();
+
+    assert.notEqual(
+      xhr.open,
+      lastOwnOpen,
+      'fixture should confirm BRT wrapped the own open method',
+    );
+
+    collector.cleanup();
+    collector = null;
+
+    assert.equal(
+      xhr.open,
+      lastOwnOpen,
+      'cleanup must restore the original own open method without WeakRef',
+    );
+
+    assert.equal(
+      xhr.setRequestHeader,
+      lastOwnSetRequestHeader,
+      'cleanup must restore the original own setRequestHeader method without WeakRef',
+    );
+
+    assert.equal(
+      xhr.send,
+      lastOwnSend,
+      'cleanup must restore the original own send method without WeakRef',
+    );
+  } finally {
+    collector?.cleanup();
+
+    window.XMLHttpRequest =
+      NativeXHR;
+
+    nativeProto.send =
+      trulyNativeSend;
+
+    if (weakRefDescriptor) {
+      Object.defineProperty(
+        globalThis,
+        'WeakRef',
+        weakRefDescriptor,
+      );
+    } else {
+      delete globalThis.WeakRef;
+    }
+
+    global.performance =
+      nativePerformance;
+  }
+});
+
 test('fetch(new Request(url, opts)) preserves method — single-argument form used to lose it', async () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://example.test/page' });
   const { window } = dom;

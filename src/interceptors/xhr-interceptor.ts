@@ -19,6 +19,8 @@ export class XhrInterceptor implements Interceptor {
   private sendOwner: XMLHttpRequest | null = null;
 
   private restoreWrappedInstances: (() => void) | null = null;
+  private restoreConstructorPrototypeSurface:
+    (() => void) | null = null;
 
   constructor(
     private readonly ctx: CollectorContext,
@@ -510,6 +512,279 @@ export class XhrInterceptor implements Interceptor {
       sendOwner.send;
 
     /*
+     * A wrapped constructor can expose a second callable surface through its
+     * own .prototype even when the object it returns belongs to an unrelated
+     * native prototype chain. Preserve that prototype identity, but route its
+     * effective XHR methods through the same capture helpers.
+     */
+    type ConstructorSurfaceMethodName =
+      | 'open'
+      | 'setRequestHeader'
+      | 'send';
+
+    type ConstructorSurfaceMethod =
+      (...args: unknown[]) => unknown;
+
+    interface ConstructorSurface {
+      open?: unknown;
+      setRequestHeader?: unknown;
+      send?: unknown;
+    }
+
+    interface ConstructorSurfaceRestore {
+      target: ConstructorSurface;
+      key: ConstructorSurfaceMethodName;
+      descriptor: PropertyDescriptor | null;
+      installed: ConstructorSurfaceMethod;
+    }
+
+    const constructorSurfaceRestores:
+      ConstructorSurfaceRestore[] = [];
+
+    const constructorPrototype =
+      OriginalXHR.prototype as unknown as ConstructorSurface;
+
+    const patchConstructorSurface = (
+      key: ConstructorSurfaceMethodName,
+      primaryOwner: XMLHttpRequest,
+      createWrapper: (
+        original: ConstructorSurfaceMethod,
+      ) => ConstructorSurfaceMethod,
+    ) => {
+      if (
+        constructorPrototype as unknown as object ===
+        primaryOwner
+      ) {
+        return;
+      }
+
+      const original =
+        constructorPrototype[key];
+
+      if (typeof original !== 'function') {
+        return;
+      }
+
+      const descriptor =
+        Object.getOwnPropertyDescriptor(
+          constructorPrototype,
+          key,
+        ) ?? null;
+
+      const installed =
+        createWrapper(
+          original as ConstructorSurfaceMethod,
+        );
+
+      try {
+        if (descriptor) {
+          Object.defineProperty(
+            constructorPrototype,
+            key,
+            {
+              ...descriptor,
+              value: installed,
+            },
+          );
+        } else {
+          Object.defineProperty(
+            constructorPrototype,
+            key,
+            {
+              configurable: true,
+              enumerable: false,
+              writable: true,
+              value: installed,
+            },
+          );
+        }
+
+        constructorSurfaceRestores.push({
+          target: constructorPrototype,
+          key,
+          descriptor,
+          installed,
+        });
+      } catch {
+        // Best-effort compatibility only.
+      }
+    };
+
+    patchConstructorSurface(
+      'open',
+      openOwner,
+      (original) => {
+        const constructorOpen =
+          original as unknown as XMLHttpRequest['open'];
+
+        return function (
+          this: XMLHttpRequest,
+          method: string,
+          url: string,
+          ...rest: unknown[]
+        ) {
+          if (bypassOpen.has(this)) {
+            return Reflect.apply(
+              constructorOpen,
+              this,
+              [method, url, ...rest],
+            );
+          }
+
+          return openThrough(
+            this,
+            method,
+            url,
+            rest,
+            () => {
+              bypassOpen.add(this);
+
+              try {
+                return Reflect.apply(
+                  constructorOpen,
+                  this,
+                  [method, url, ...rest],
+                );
+              } finally {
+                bypassOpen.delete(this);
+              }
+            },
+          );
+        } as unknown as ConstructorSurfaceMethod;
+      },
+    );
+
+    patchConstructorSurface(
+      'setRequestHeader',
+      setRequestHeaderOwner,
+      (original) => {
+        const constructorSetRequestHeader =
+          original as unknown as XMLHttpRequest['setRequestHeader'];
+
+        return function (
+          this: XMLHttpRequest,
+          name: string,
+          value: string,
+        ) {
+          if (
+            bypassSetRequestHeader.has(this)
+          ) {
+            return Reflect.apply(
+              constructorSetRequestHeader,
+              this,
+              [name, value],
+            );
+          }
+
+          return setRequestHeaderThrough(
+            this,
+            name,
+            value,
+            () => {
+              bypassSetRequestHeader.add(
+                this,
+              );
+
+              try {
+                return Reflect.apply(
+                  constructorSetRequestHeader,
+                  this,
+                  [name, value],
+                );
+              } finally {
+                bypassSetRequestHeader.delete(
+                  this,
+                );
+              }
+            },
+          );
+        } as unknown as ConstructorSurfaceMethod;
+      },
+    );
+
+    patchConstructorSurface(
+      'send',
+      sendOwner,
+      (original) => {
+        const constructorSend =
+          original as unknown as XMLHttpRequest['send'];
+
+        return function (
+          this: XMLHttpRequest,
+          body?: Document | XMLHttpRequestBodyInit | null,
+        ) {
+          if (bypassSend.has(this)) {
+            return Reflect.apply(
+              constructorSend,
+              this,
+              [body],
+            );
+          }
+
+          return sendThrough(
+            this,
+            body,
+            () => {
+              bypassSend.add(this);
+
+              try {
+                return Reflect.apply(
+                  constructorSend,
+                  this,
+                  [body],
+                );
+              } finally {
+                bypassSend.delete(this);
+              }
+            },
+          );
+        } as unknown as ConstructorSurfaceMethod;
+      },
+    );
+
+    this.restoreConstructorPrototypeSurface =
+      () => {
+        for (
+          const entry of constructorSurfaceRestores
+        ) {
+          const current =
+            Object.getOwnPropertyDescriptor(
+              entry.target,
+              entry.key,
+            );
+
+          /*
+           * Do not overwrite instrumentation installed after BRT.
+           */
+          if (
+            current?.value !==
+            entry.installed
+          ) {
+            continue;
+          }
+
+          try {
+            if (entry.descriptor) {
+              Object.defineProperty(
+                entry.target,
+                entry.key,
+                entry.descriptor,
+              );
+            } else {
+              Reflect.deleteProperty(
+                entry.target,
+                entry.key,
+              );
+            }
+          } catch {
+            // Best-effort cleanup.
+          }
+        }
+
+        constructorSurfaceRestores.length = 0;
+      };
+
+    /*
      * Some preinstalled monitoring constructors attach own XHR methods to
      * every returned instance and keep cached native delegates. Patching the
      * prototype cannot observe those calls, so instances created while BRT
@@ -656,6 +931,99 @@ export class XhrInterceptor implements Interceptor {
 
       const installed =
         createWrapper(original);
+
+      /*
+       * Without WeakRef there is no non-retaining way to enumerate every
+       * wrapped XHR during global cleanup. For configurable own properties,
+       * install a lazy accessor instead. While BRT is active it exposes the
+       * wrapper; after cleanup its first read restores the exact original
+       * data descriptor and returns the original function.
+       *
+       * A non-configurable own method is left untouched in this fallback
+       * rather than installing a wrapper that could not be restored without
+       * retaining the XHR.
+       */
+      if (!WeakRefCtor) {
+        if (descriptor.configurable === false) {
+          return;
+        }
+
+        const hookIsActive = () => {
+          switch (key) {
+            case 'open':
+              return instanceHooks.open !== null;
+
+            case 'setRequestHeader':
+              return (
+                instanceHooks.setRequestHeader !==
+                null
+              );
+
+            case 'send':
+              return instanceHooks.send !== null;
+          }
+        };
+
+        const lazyDescriptor:
+          PropertyDescriptor = {
+          configurable: true,
+          enumerable:
+            descriptor.enumerable ?? false,
+
+          get: function (
+            this: XMLHttpRequest,
+          ) {
+            if (hookIsActive()) {
+              return installed;
+            }
+
+            try {
+              Object.defineProperty(
+                this,
+                key,
+                descriptor,
+              );
+            } catch {
+              // Best-effort lazy restoration.
+            }
+
+            return original;
+          },
+        };
+
+        if (descriptor.writable !== false) {
+          lazyDescriptor.set =
+            function (
+              this: XMLHttpRequest,
+              value: unknown,
+            ) {
+              try {
+                Object.defineProperty(
+                  this,
+                  key,
+                  {
+                    ...descriptor,
+                    value,
+                  },
+                );
+              } catch {
+                // Preserve original assignment semantics as closely as possible.
+              }
+            };
+        }
+
+        try {
+          Object.defineProperty(
+            xhr,
+            key,
+            lazyDescriptor,
+          );
+        } catch {
+          // Best-effort compatibility only.
+        }
+
+        return;
+      }
 
       try {
         Object.defineProperty(
@@ -981,6 +1349,7 @@ export class XhrInterceptor implements Interceptor {
       this.sendOwner;
 
     this.restoreWrappedInstances?.();
+    this.restoreConstructorPrototypeSurface?.();
 
     if (
       this.installedConstructor &&
@@ -1039,6 +1408,9 @@ export class XhrInterceptor implements Interceptor {
     this.sendOwner = null;
 
     this.restoreWrappedInstances =
+      null;
+
+    this.restoreConstructorPrototypeSurface =
       null;
   }
 }
