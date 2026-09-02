@@ -11,6 +11,7 @@ export class XhrInterceptor implements Interceptor {
   private installedOpen: XMLHttpRequest['open'] | null = null;
   private installedSetRequestHeader: XMLHttpRequest['setRequestHeader'] | null = null;
   private installedSend: XMLHttpRequest['send'] | null = null;
+  private patchedPrototype: XMLHttpRequest | null = null;
 
   constructor(
     private readonly ctx: CollectorContext,
@@ -21,13 +22,34 @@ export class XhrInterceptor implements Interceptor {
     this.original = window.XMLHttpRequest;
 
     const OriginalXHR = this.original;
-    const proto = OriginalXHR.prototype;
+
+    // A page may already have replaced window.XMLHttpRequest with a wrapper
+    // constructor whose .prototype is unrelated to the native XHR instances
+    // it returns. Discover the prototype that actually owns the XHR methods.
+    const probe = new OriginalXHR();
+
+    let proto = Object.getPrototypeOf(probe) as XMLHttpRequest | null;
+
+    while (
+      proto &&
+      (!Object.prototype.hasOwnProperty.call(proto, 'open') ||
+        !Object.prototype.hasOwnProperty.call(proto, 'setRequestHeader') ||
+        !Object.prototype.hasOwnProperty.call(proto, 'send'))
+    ) {
+      proto = Object.getPrototypeOf(proto) as XMLHttpRequest | null;
+    }
+
+    if (!proto) {
+      proto = OriginalXHR.prototype;
+    }
+
+    this.patchedPrototype = proto;
+
     const ctx = this.ctx;
     const analyzer = this.analyzer;
 
     const requestDataByXhr = new WeakMap<XMLHttpRequest, RequestData>();
     const cleanupByXhr = new WeakMap<XMLHttpRequest, () => void>();
-    const finalizeByXhr = new WeakMap<XMLHttpRequest, () => void>();
 
     const originalOpen = proto.open;
     const originalSetRequestHeader = proto.setRequestHeader;
@@ -43,13 +65,7 @@ export class XhrInterceptor implements Interceptor {
       url: string,
       ...rest: unknown[]
     ) {
-      const finalizePrevious = finalizeByXhr.get(this);
-
-      if (finalizePrevious && this.readyState === OriginalXHR.DONE) {
-        finalizePrevious();
-      } else {
-        cleanupByXhr.get(this)?.();
-      }
+      cleanupByXhr.get(this)?.();
 
       const requestData: RequestData = {
         id: ctx.generateId(),
@@ -122,18 +138,15 @@ export class XhrInterceptor implements Interceptor {
         if (settled) return;
         settled = true;
 
-        this.removeEventListener('load', handleLoad);
-        this.removeEventListener('error', handleError);
-        this.removeEventListener('abort', handleAbort);
-        this.removeEventListener('timeout', handleTimeout);
+        this.removeEventListener('load', handleLoad, true);
+        this.removeEventListener('error', handleError, true);
+        this.removeEventListener('abort', handleAbort, true);
+        this.removeEventListener('timeout', handleTimeout, true);
 
         if (cleanupByXhr.get(this) === cleanupListeners) {
           cleanupByXhr.delete(this);
         }
 
-        if (finalizeByXhr.get(this) === finalizeResponse) {
-          finalizeByXhr.delete(this);
-        }
       };
 
       const finalizeResponse = () => {
@@ -177,13 +190,14 @@ export class XhrInterceptor implements Interceptor {
         cleanupListeners();
       };
 
-      this.addEventListener('load', handleLoad);
-      this.addEventListener('error', handleError);
-      this.addEventListener('abort', handleAbort);
-      this.addEventListener('timeout', handleTimeout);
+      // Terminal handlers use capture so BRT observes completion before
+      // ordinary application listeners can immediately reopen the same XHR.
+      this.addEventListener('load', handleLoad, true);
+      this.addEventListener('error', handleError, true);
+      this.addEventListener('abort', handleAbort, true);
+      this.addEventListener('timeout', handleTimeout, true);
 
       cleanupByXhr.set(this, cleanupListeners);
-      finalizeByXhr.set(this, finalizeResponse);
 
       try {
         return originalSend.call(this, body as never);
@@ -197,9 +211,9 @@ export class XhrInterceptor implements Interceptor {
   }
 
   restore(): void {
-    if (!this.original) return;
+    if (!this.original || !this.patchedPrototype) return;
 
-    const proto = this.original.prototype;
+    const proto = this.patchedPrototype;
 
     if (
       this.originalOpen &&
@@ -233,5 +247,6 @@ export class XhrInterceptor implements Interceptor {
     this.installedOpen = null;
     this.installedSetRequestHeader = null;
     this.installedSend = null;
+    this.patchedPrototype = null;
   }
 }

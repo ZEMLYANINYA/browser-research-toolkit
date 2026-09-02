@@ -513,6 +513,207 @@ test('XHR cleanup preserves prototype wrappers installed after the collector', a
   }
 });
 
+test('XHR capture survives a preinstalled constructor wrapper with an unrelated prototype', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const NativeXHR = window.XMLHttpRequest;
+  const nativeProto = NativeXHR.prototype;
+  const nativeSend = nativeProto.send;
+
+  // Avoid a real network request.
+  nativeProto.send = function () {};
+
+  function PreinstalledXHR() {
+    return new NativeXHR();
+  }
+
+  // Model instrumentation that exposes its own constructor prototype while
+  // returning a real native XMLHttpRequest instance.
+  PreinstalledXHR.prototype = {
+    constructor: PreinstalledXHR,
+  };
+
+  Object.setPrototypeOf(PreinstalledXHR, NativeXHR);
+
+  window.XMLHttpRequest = PreinstalledXHR;
+
+  let collector;
+
+  try {
+    const { ResearchCollector } = await import('../../dist/collector.js');
+    collector = new ResearchCollector({ logLevel: 'error' });
+
+    const xhr = new window.XMLHttpRequest();
+
+    assert.ok(
+      xhr instanceof NativeXHR,
+      'preinstalled wrapper should return a real native XHR instance',
+    );
+
+    xhr.open(
+      'GET',
+      'https://example.test/api/preinstalled-constructor-wrapper',
+    );
+
+    xhr.send();
+
+    const requests = collector.exportData().networkRequests;
+
+    const recorded = requests.find((request) =>
+      request.url.includes('/api/preinstalled-constructor-wrapper'),
+    );
+
+    assert.ok(
+      recorded,
+      'XHR returned by a preinstalled constructor wrapper should still be captured',
+    );
+
+    assert.equal(recorded.method, 'GET');
+  } finally {
+    collector?.cleanup();
+
+    window.XMLHttpRequest = NativeXHR;
+    nativeProto.send = nativeSend;
+
+    global.performance = nativePerformance;
+  }
+});
+
+test('XHR retries from error or timeout are not finalized as successful loads', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const nativeSend = window.XMLHttpRequest.prototype.send;
+
+  // Keep the test deterministic. Terminal events are dispatched manually.
+  window.XMLHttpRequest.prototype.send = function () {};
+
+  let collector;
+
+  try {
+    const { ResearchCollector } = await import('../../dist/collector.js');
+    collector = new ResearchCollector({ logLevel: 'error' });
+
+    for (const terminalEvent of ['error', 'timeout']) {
+      const xhr = new window.XMLHttpRequest();
+
+      let syntheticReadyState = window.XMLHttpRequest.UNSENT;
+      let syntheticStatus = 0;
+      let syntheticStatusText = '';
+
+      Object.defineProperty(xhr, 'readyState', {
+        configurable: true,
+        get: () => syntheticReadyState,
+      });
+
+      Object.defineProperty(xhr, 'status', {
+        configurable: true,
+        get: () => syntheticStatus,
+      });
+
+      Object.defineProperty(xhr, 'statusText', {
+        configurable: true,
+        get: () => syntheticStatusText,
+      });
+
+      // This application handler is registered before send(), so it runs
+      // before BRT's per-send terminal listener and immediately retries.
+      xhr.addEventListener(terminalEvent, () => {
+        xhr.open(
+          'GET',
+          'https://example.test/api/retry-' +
+            terminalEvent +
+            '-second',
+        );
+
+        syntheticReadyState = window.XMLHttpRequest.OPENED;
+        syntheticStatus = 0;
+        syntheticStatusText = '';
+      });
+
+      xhr.open(
+        'GET',
+        'https://example.test/api/retry-' +
+          terminalEvent +
+          '-first',
+      );
+
+      syntheticReadyState = window.XMLHttpRequest.OPENED;
+
+      xhr.send();
+
+      syntheticReadyState = window.XMLHttpRequest.DONE;
+      syntheticStatus = 0;
+      syntheticStatusText = '';
+
+      xhr.dispatchEvent(new window.Event(terminalEvent));
+
+      const requests = collector.exportData().networkRequests;
+
+      const first = requests.find((request) =>
+        request.url.includes(
+          '/api/retry-' + terminalEvent + '-first',
+        ),
+      );
+
+      assert.ok(
+        first,
+        terminalEvent + ' request should have been recorded',
+      );
+
+      assert.equal(
+        first.responseType,
+        undefined,
+        terminalEvent +
+          ' retry must not analyze the failed request as a successful response',
+      );
+    }
+
+    const errors = collector.getErrors();
+
+    assert.ok(
+      errors.some((entry) => entry.type === 'XHR Error'),
+      'error retry should still reach the collector XHR error handler',
+    );
+  } finally {
+    collector?.cleanup();
+
+    window.XMLHttpRequest.prototype.send = nativeSend;
+    global.performance = nativePerformance;
+  }
+});
+
 test('fetch(new Request(url, opts)) preserves method — single-argument form used to lose it', async () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://example.test/page' });
   const { window } = dom;
