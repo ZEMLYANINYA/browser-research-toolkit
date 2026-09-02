@@ -227,6 +227,104 @@ test('XHR constructor preserves native surface for Dynatrace-style prototype cal
   }
 });
 
+test('XHR per-send listeners are removed before a reused instance starts another request', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const nativeSend = window.XMLHttpRequest.prototype.send;
+
+  // Avoid a real network request. The interceptor captures this method during
+  // installation, while the test manually dispatches terminal XHR events.
+  window.XMLHttpRequest.prototype.send = function () {};
+
+  let collector;
+  try {
+    const { ResearchCollector } = await import('../../dist/collector.js');
+    collector = new ResearchCollector({ logLevel: 'error' });
+
+    const xhr = new window.XMLHttpRequest();
+
+    const nativeAddEventListener = xhr.addEventListener.bind(xhr);
+    const nativeRemoveEventListener = xhr.removeEventListener.bind(xhr);
+
+    const activeListeners = new Map();
+
+    xhr.addEventListener = ((type, listener, options) => {
+      if (['load', 'error', 'abort', 'timeout'].includes(type)) {
+        if (!activeListeners.has(type)) {
+          activeListeners.set(type, new Set());
+        }
+        activeListeners.get(type).add(listener);
+      }
+
+      return nativeAddEventListener(type, listener, options);
+    });
+
+    xhr.removeEventListener = ((type, listener, options) => {
+      activeListeners.get(type)?.delete(listener);
+      return nativeRemoveEventListener(type, listener, options);
+    });
+
+    xhr.open('GET', 'https://example.test/api/reuse-first');
+    xhr.send();
+
+    assert.equal(
+      activeListeners.get('load')?.size ?? 0,
+      1,
+      'first send should install one load listener',
+    );
+
+    xhr.dispatchEvent(new window.Event('error'));
+
+    assert.equal(
+      activeListeners.get('load')?.size ?? 0,
+      0,
+      'terminal error should remove the stale load listener',
+    );
+
+    assert.equal(
+      activeListeners.get('error')?.size ?? 0,
+      0,
+      'terminal error should remove its own error listener',
+    );
+
+    xhr.open('GET', 'https://example.test/api/reuse-second');
+    xhr.send();
+
+    assert.equal(
+      activeListeners.get('load')?.size ?? 0,
+      1,
+      'reusing the XHR should install only one fresh load listener',
+    );
+
+    xhr.dispatchEvent(new window.Event('abort'));
+
+    assert.equal(
+      activeListeners.get('load')?.size ?? 0,
+      0,
+      'abort should remove listeners belonging to the aborted request',
+    );
+  } finally {
+    collector?.cleanup();
+    window.XMLHttpRequest.prototype.send = nativeSend;
+    global.performance = nativePerformance;
+  }
+});
+
 test('fetch(new Request(url, opts)) preserves method — single-argument form used to lose it', async () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://example.test/page' });
   const { window } = dom;

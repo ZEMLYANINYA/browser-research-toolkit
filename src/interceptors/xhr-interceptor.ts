@@ -22,6 +22,7 @@ export class XhrInterceptor implements Interceptor {
     const analyzer = this.analyzer;
 
     const requestDataByXhr = new WeakMap<XMLHttpRequest, RequestData>();
+    const cleanupByXhr = new WeakMap<XMLHttpRequest, () => void>();
 
     const originalOpen = proto.open;
     const originalSetRequestHeader = proto.setRequestHeader;
@@ -37,6 +38,8 @@ export class XhrInterceptor implements Interceptor {
       url: string,
       ...rest: unknown[]
     ) {
+      cleanupByXhr.get(this)?.();
+
       const requestData: RequestData = {
         id: ctx.generateId(),
         type: 'xhr',
@@ -96,7 +99,27 @@ export class XhrInterceptor implements Interceptor {
 
       const id = requestData.id;
 
-      this.addEventListener('load', () => {
+      cleanupByXhr.get(this)?.();
+
+      let settled = false;
+
+      const cleanupListeners = () => {
+        if (settled) return;
+        settled = true;
+
+        this.removeEventListener('load', handleLoad);
+        this.removeEventListener('error', handleError);
+        this.removeEventListener('abort', handleAbort);
+        this.removeEventListener('timeout', handleTimeout);
+
+        if (cleanupByXhr.get(this) === cleanupListeners) {
+          cleanupByXhr.delete(this);
+        }
+      };
+
+      const handleLoad = () => {
+        cleanupListeners();
+
         requestData.status = this.status;
         requestData.statusText = this.statusText;
 
@@ -109,17 +132,39 @@ export class XhrInterceptor implements Interceptor {
               { requestId: id },
             ),
           );
-      });
+      };
 
-      this.addEventListener('error', () => {
+      const handleError = () => {
+        cleanupListeners();
+
         ctx.logger.logError(
           'XHR Error',
           new Error('Network Error'),
           requestData,
         );
-      });
+      };
 
-      return originalSend.call(this, body as never);
+      const handleAbort = () => {
+        cleanupListeners();
+      };
+
+      const handleTimeout = () => {
+        cleanupListeners();
+      };
+
+      this.addEventListener('load', handleLoad);
+      this.addEventListener('error', handleError);
+      this.addEventListener('abort', handleAbort);
+      this.addEventListener('timeout', handleTimeout);
+
+      cleanupByXhr.set(this, cleanupListeners);
+
+      try {
+        return originalSend.call(this, body as never);
+      } catch (err) {
+        cleanupListeners();
+        throw err;
+      }
     } as typeof proto.send;
   }
 
