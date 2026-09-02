@@ -21,6 +21,8 @@ export class XhrInterceptor implements Interceptor {
   private restoreWrappedInstances: (() => void) | null = null;
   private restoreConstructorPrototypeSurface:
     (() => void) | null = null;
+  private retirePrototypeHooks:
+    (() => void) | null = null;
 
   constructor(
     private readonly ctx: CollectorContext,
@@ -421,6 +423,31 @@ export class XhrInterceptor implements Interceptor {
     };
 
     /*
+     * Prototype wrappers may themselves be retained by instrumentation
+     * installed after BRT. Route capture through mutable hooks so cleanup()
+     * can retire those retained functions without removing the later wrapper.
+     */
+    const prototypeHooks: {
+      open: typeof openThrough | null;
+      setRequestHeader:
+        typeof setRequestHeaderThrough | null;
+      send: typeof sendThrough | null;
+    } = {
+      open: openThrough,
+      setRequestHeader:
+        setRequestHeaderThrough,
+      send: sendThrough,
+    };
+
+    this.retirePrototypeHooks =
+      () => {
+        prototypeHooks.open = null;
+        prototypeHooks.setRequestHeader =
+          null;
+        prototypeHooks.send = null;
+      };
+
+    /*
      * Prototype interception preserves Dynatrace/RUM-style calls such as
      * XMLHttpRequest.prototype.open.apply(xhr, args).
      */
@@ -430,7 +457,13 @@ export class XhrInterceptor implements Interceptor {
       url: string,
       ...rest: unknown[]
     ) {
-      if (bypassOpen.has(this)) {
+      const hook =
+        prototypeHooks.open;
+
+      if (
+        !hook ||
+        bypassOpen.has(this)
+      ) {
         return Reflect.apply(
           originalOpen,
           this,
@@ -438,7 +471,7 @@ export class XhrInterceptor implements Interceptor {
         );
       }
 
-      return openThrough(
+      return hook(
         this,
         method,
         url,
@@ -460,7 +493,11 @@ export class XhrInterceptor implements Interceptor {
       name: string,
       value: string,
     ) {
+      const hook =
+        prototypeHooks.setRequestHeader;
+
       if (
+        !hook ||
         bypassSetRequestHeader.has(this)
       ) {
         return originalSetRequestHeader.call(
@@ -470,7 +507,7 @@ export class XhrInterceptor implements Interceptor {
         );
       }
 
-      return setRequestHeaderThrough(
+      return hook(
         this,
         name,
         value,
@@ -490,14 +527,20 @@ export class XhrInterceptor implements Interceptor {
       this: XMLHttpRequest,
       body?: Document | XMLHttpRequestBodyInit | null,
     ) {
-      if (bypassSend.has(this)) {
+      const hook =
+        prototypeHooks.send;
+
+      if (
+        !hook ||
+        bypassSend.has(this)
+      ) {
         return originalSend.call(
           this,
           body as never,
         );
       }
 
-      return sendThrough(
+      return hook(
         this,
         body,
         () =>
@@ -623,7 +666,13 @@ export class XhrInterceptor implements Interceptor {
           url: string,
           ...rest: unknown[]
         ) {
-          if (bypassOpen.has(this)) {
+          const hook =
+            prototypeHooks.open;
+
+          if (
+            !hook ||
+            bypassOpen.has(this)
+          ) {
             return Reflect.apply(
               constructorOpen,
               this,
@@ -631,7 +680,7 @@ export class XhrInterceptor implements Interceptor {
             );
           }
 
-          return openThrough(
+          return hook(
             this,
             method,
             url,
@@ -666,7 +715,11 @@ export class XhrInterceptor implements Interceptor {
           name: string,
           value: string,
         ) {
+          const hook =
+            prototypeHooks.setRequestHeader;
+
           if (
+            !hook ||
             bypassSetRequestHeader.has(this)
           ) {
             return Reflect.apply(
@@ -676,7 +729,7 @@ export class XhrInterceptor implements Interceptor {
             );
           }
 
-          return setRequestHeaderThrough(
+          return hook(
             this,
             name,
             value,
@@ -713,7 +766,13 @@ export class XhrInterceptor implements Interceptor {
           this: XMLHttpRequest,
           body?: Document | XMLHttpRequestBodyInit | null,
         ) {
-          if (bypassSend.has(this)) {
+          const hook =
+            prototypeHooks.send;
+
+          if (
+            !hook ||
+            bypassSend.has(this)
+          ) {
             return Reflect.apply(
               constructorSend,
               this,
@@ -721,7 +780,7 @@ export class XhrInterceptor implements Interceptor {
             );
           }
 
-          return sendThrough(
+          return hook(
             this,
             body,
             () => {
@@ -799,7 +858,11 @@ export class XhrInterceptor implements Interceptor {
       (...args: unknown[]) => unknown;
 
     interface OwnRestore {
-      descriptor: PropertyDescriptor;
+      /*
+       * null means BRT added an own wrapper over an inherited method.
+       * Cleanup restores that state by deleting the temporary own property.
+       */
+      descriptor: PropertyDescriptor | null;
       installed: OwnMethod;
     }
 
@@ -892,66 +955,134 @@ export class XhrInterceptor implements Interceptor {
       wrappedSinceSweep = 0;
     };
 
+    const findInstanceMethodOwner = (
+      xhr: XMLHttpRequest,
+      key: OwnMethodName,
+    ): object | null => {
+      let owner: object | null = xhr;
+
+      while (
+        owner &&
+        !Object.prototype.hasOwnProperty.call(
+          owner,
+          key,
+        )
+      ) {
+        owner =
+          Object.getPrototypeOf(owner) as object | null;
+      }
+
+      return owner;
+    };
+
     const installOwnWrapper = (
       xhr: XMLHttpRequest,
       key: OwnMethodName,
+      primaryOwner: XMLHttpRequest,
       createWrapper: (
         original: OwnMethod,
       ) => OwnMethod,
     ) => {
-      const descriptor =
-        Object.getOwnPropertyDescriptor(
+      const owner =
+        findInstanceMethodOwner(
           xhr,
           key,
         );
 
+      if (!owner) {
+        return;
+      }
+
+      /*
+       * This effective method is already routed through the shared prototype
+       * wrapper installed above.
+       */
       if (
-        !descriptor ||
-        typeof descriptor.value !==
+        owner !== xhr &&
+        owner ===
+          (primaryOwner as unknown as object)
+      ) {
+        return;
+      }
+
+      const sourceDescriptor =
+        Object.getOwnPropertyDescriptor(
+          owner,
+          key,
+        );
+
+      if (
+        !sourceDescriptor ||
+        typeof sourceDescriptor.value !==
           'function'
       ) {
         return;
       }
 
+      const hadOwn =
+        owner ===
+        (xhr as unknown as object);
+
       /*
-       * A non-configurable but writable data property may still have its
-       * value replaced. A non-writable/non-configurable property cannot be
-       * safely intercepted without violating page semantics.
+       * A non-configurable own data property can only be replaced when it is
+       * writable. Inherited divergent methods are shadowed with a temporary
+       * configurable own property.
        */
       if (
-        descriptor.configurable ===
+        hadOwn &&
+        sourceDescriptor.configurable ===
           false &&
-        descriptor.writable !== true
+        sourceDescriptor.writable !== true
       ) {
         return;
       }
 
       const original =
-        descriptor.value as OwnMethod;
+        sourceDescriptor.value as OwnMethod;
 
       const installed =
         createWrapper(original);
 
+      const restoreDescriptor =
+        hadOwn
+          ? sourceDescriptor
+          : null;
+
+      const installedDescriptor:
+        PropertyDescriptor =
+        hadOwn
+          ? {
+              ...sourceDescriptor,
+              value: installed,
+            }
+          : {
+              configurable: true,
+              enumerable:
+                sourceDescriptor.enumerable ??
+                false,
+              writable: true,
+              value: installed,
+            };
+
       /*
-       * Without WeakRef there is no non-retaining way to enumerate every
-       * wrapped XHR during global cleanup. For configurable own properties,
-       * install a lazy accessor instead. While BRT is active it exposes the
-       * wrapper; after cleanup its first read restores the exact original
-       * data descriptor and returns the original function.
-       *
-       * A non-configurable own method is left untouched in this fallback
-       * rather than installing a wrapper that could not be restored without
-       * retaining the XHR.
+       * Without WeakRef there is no non-retaining global enumeration of live
+       * instances. Use a lazy self-restoring property when possible.
        */
       if (!WeakRefCtor) {
-        if (descriptor.configurable === false) {
+        if (
+          hadOwn &&
+          sourceDescriptor.configurable ===
+            false
+        ) {
           return;
         }
 
         const hookIsActive = () => {
           switch (key) {
             case 'open':
-              return instanceHooks.open !== null;
+              return (
+                instanceHooks.open !== null
+              );
 
             case 'setRequestHeader':
               return (
@@ -960,7 +1091,30 @@ export class XhrInterceptor implements Interceptor {
               );
 
             case 'send':
-              return instanceHooks.send !== null;
+              return (
+                instanceHooks.send !== null
+              );
+          }
+        };
+
+        const restoreOriginalState = (
+          target: XMLHttpRequest,
+        ) => {
+          try {
+            if (restoreDescriptor) {
+              Object.defineProperty(
+                target,
+                key,
+                restoreDescriptor,
+              );
+            } else {
+              Reflect.deleteProperty(
+                target,
+                key,
+              );
+            }
+          } catch {
+            // Best-effort lazy restoration.
           }
         };
 
@@ -968,7 +1122,8 @@ export class XhrInterceptor implements Interceptor {
           PropertyDescriptor = {
           configurable: true,
           enumerable:
-            descriptor.enumerable ?? false,
+            sourceDescriptor.enumerable ??
+            false,
 
           get: function (
             this: XMLHttpRequest,
@@ -977,40 +1132,38 @@ export class XhrInterceptor implements Interceptor {
               return installed;
             }
 
+            restoreOriginalState(this);
+
+            return original;
+          },
+
+          set: function (
+            this: XMLHttpRequest,
+            value: unknown,
+          ) {
             try {
               Object.defineProperty(
                 this,
                 key,
-                descriptor,
+                restoreDescriptor
+                  ? {
+                      ...restoreDescriptor,
+                      value,
+                    }
+                  : {
+                      configurable: true,
+                      enumerable:
+                        sourceDescriptor.enumerable ??
+                        false,
+                      writable: true,
+                      value,
+                    },
               );
             } catch {
-              // Best-effort lazy restoration.
+              // Best-effort assignment compatibility.
             }
-
-            return original;
           },
         };
-
-        if (descriptor.writable !== false) {
-          lazyDescriptor.set =
-            function (
-              this: XMLHttpRequest,
-              value: unknown,
-            ) {
-              try {
-                Object.defineProperty(
-                  this,
-                  key,
-                  {
-                    ...descriptor,
-                    value,
-                  },
-                );
-              } catch {
-                // Preserve original assignment semantics as closely as possible.
-              }
-            };
-        }
 
         try {
           Object.defineProperty(
@@ -1029,10 +1182,7 @@ export class XhrInterceptor implements Interceptor {
         Object.defineProperty(
           xhr,
           key,
-          {
-            ...descriptor,
-            value: installed,
-          },
+          installedDescriptor,
         );
 
         let restores =
@@ -1054,7 +1204,8 @@ export class XhrInterceptor implements Interceptor {
         restores.set(
           key,
           {
-            descriptor,
+            descriptor:
+              restoreDescriptor,
             installed,
           },
         );
@@ -1071,6 +1222,7 @@ export class XhrInterceptor implements Interceptor {
       installOwnWrapper(
         xhr,
         'open',
+        openOwner,
         (original) => {
           const ownOpen =
             original as unknown as XMLHttpRequest['open'];
@@ -1126,6 +1278,7 @@ export class XhrInterceptor implements Interceptor {
       installOwnWrapper(
         xhr,
         'setRequestHeader',
+        setRequestHeaderOwner,
         (original) => {
           const ownSetRequestHeader =
             original as unknown as XMLHttpRequest['setRequestHeader'];
@@ -1175,6 +1328,7 @@ export class XhrInterceptor implements Interceptor {
       installOwnWrapper(
         xhr,
         'send',
+        sendOwner,
         (original) => {
           const ownSend =
             original as unknown as XMLHttpRequest['send'];
@@ -1267,11 +1421,18 @@ export class XhrInterceptor implements Interceptor {
             }
 
             try {
-              Object.defineProperty(
-                xhr,
-                key,
-                entry.descriptor,
-              );
+              if (entry.descriptor) {
+                Object.defineProperty(
+                  xhr,
+                  key,
+                  entry.descriptor,
+                );
+              } else {
+                Reflect.deleteProperty(
+                  xhr,
+                  key,
+                );
+              }
             } catch {
               // Best-effort cleanup.
             }
@@ -1348,6 +1509,7 @@ export class XhrInterceptor implements Interceptor {
     const sendOwner =
       this.sendOwner;
 
+    this.retirePrototypeHooks?.();
     this.restoreWrappedInstances?.();
     this.restoreConstructorPrototypeSurface?.();
 
@@ -1411,6 +1573,9 @@ export class XhrInterceptor implements Interceptor {
       null;
 
     this.restoreConstructorPrototypeSurface =
+      null;
+
+    this.retirePrototypeHooks =
       null;
   }
 }

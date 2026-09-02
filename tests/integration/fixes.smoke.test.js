@@ -1796,6 +1796,286 @@ test('XHR cleanup restores own methods when WeakRef is unavailable', async () =>
   }
 });
 
+test('XHR capture survives fresh per-instance prototypes with cached delegates', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const NativeXHR = window.XMLHttpRequest;
+  const nativeProto = NativeXHR.prototype;
+
+  const cachedOpen = nativeProto.open;
+  const trulyNativeSend = nativeProto.send;
+
+  // Avoid real network I/O while retaining a delegate cached before BRT.
+  nativeProto.send = function () {};
+
+  const cachedSend = nativeProto.send;
+
+  function PreinstalledXHR() {
+    const xhr = new NativeXHR();
+
+    /*
+     * Every construction gets a different prototype. Patching a probe's
+     * prototype therefore cannot affect later returned XHR instances.
+     */
+    const instancePrototype =
+      Object.create(nativeProto);
+
+    Object.defineProperties(
+      instancePrototype,
+      {
+        open: {
+          configurable: true,
+          writable: true,
+          value: function (...args) {
+            return Reflect.apply(
+              cachedOpen,
+              this,
+              args,
+            );
+          },
+        },
+
+        send: {
+          configurable: true,
+          writable: true,
+          value: function (...args) {
+            return Reflect.apply(
+              cachedSend,
+              this,
+              args,
+            );
+          },
+        },
+      },
+    );
+
+    Object.setPrototypeOf(
+      xhr,
+      instancePrototype,
+    );
+
+    return xhr;
+  }
+
+  PreinstalledXHR.prototype =
+    NativeXHR.prototype;
+
+  Object.setPrototypeOf(
+    PreinstalledXHR,
+    NativeXHR,
+  );
+
+  window.XMLHttpRequest =
+    PreinstalledXHR;
+
+  let collector;
+
+  try {
+    const { ResearchCollector } =
+      await import('../../dist/collector.js');
+
+    collector = new ResearchCollector({
+      logLevel: 'error',
+    });
+
+    const xhr =
+      new window.XMLHttpRequest();
+
+    xhr.open(
+      'POST',
+      'https://example.test/api/fresh-instance-prototype',
+    );
+
+    xhr.send('payload');
+
+    const requests =
+      collector.exportData().networkRequests;
+
+    const recorded = requests.find(
+      (request) =>
+        request.url.includes(
+          '/api/fresh-instance-prototype',
+        ),
+    );
+
+    assert.ok(
+      recorded,
+      'XHR using a fresh per-instance prototype should still be captured',
+    );
+
+    assert.equal(
+      recorded.method,
+      'POST',
+    );
+  } finally {
+    collector?.cleanup();
+
+    window.XMLHttpRequest =
+      NativeXHR;
+
+    nativeProto.send =
+      trulyNativeSend;
+
+    global.performance =
+      nativePerformance;
+  }
+});
+
+test('XHR cleanup retires prototype hooks retained by later wrappers', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const NativeXHR = window.XMLHttpRequest;
+  const nativeProto = NativeXHR.prototype;
+
+  const trulyNativeOpen =
+    nativeProto.open;
+
+  const trulyNativeSend =
+    nativeProto.send;
+
+  // Keep the test completely local.
+  nativeProto.send = function () {};
+
+  let collector;
+
+  try {
+    const { ResearchCollector } =
+      await import('../../dist/collector.js');
+
+    collector = new ResearchCollector({
+      logLevel: 'error',
+    });
+
+    /*
+     * Simulate instrumentation installed after BRT. These wrappers retain
+     * references to the functions BRT installed.
+     */
+    const brtOpen =
+      nativeProto.open;
+
+    const brtSend =
+      nativeProto.send;
+
+    const laterOpen =
+      function (...args) {
+        return Reflect.apply(
+          brtOpen,
+          this,
+          args,
+        );
+      };
+
+    const laterSend =
+      function (...args) {
+        return Reflect.apply(
+          brtSend,
+          this,
+          args,
+        );
+      };
+
+    nativeProto.open =
+      laterOpen;
+
+    nativeProto.send =
+      laterSend;
+
+    collector.cleanup();
+
+    assert.equal(
+      nativeProto.open,
+      laterOpen,
+      'cleanup should preserve instrumentation installed after BRT',
+    );
+
+    assert.equal(
+      nativeProto.send,
+      laterSend,
+      'cleanup should preserve the later send wrapper',
+    );
+
+    /*
+     * cleanup() removed BRT. start() only toggles collector activity and
+     * must not resurrect interception through wrappers that retained old
+     * BRT function references.
+     */
+    collector.clearData();
+    collector.start();
+
+    const xhr =
+      new NativeXHR();
+
+    xhr.open(
+      'GET',
+      'https://example.test/api/retired-prototype-hook',
+    );
+
+    xhr.send();
+
+    const requests =
+      collector.exportData().networkRequests;
+
+    const resurrected = requests.some(
+      (request) =>
+        request.url.includes(
+          '/api/retired-prototype-hook',
+        ),
+    );
+
+    assert.equal(
+      resurrected,
+      false,
+      'later wrappers must not resurrect BRT capture after cleanup',
+    );
+  } finally {
+    collector?.stop();
+
+    window.XMLHttpRequest =
+      NativeXHR;
+
+    nativeProto.open =
+      trulyNativeOpen;
+
+    nativeProto.send =
+      trulyNativeSend;
+
+    global.performance =
+      nativePerformance;
+  }
+});
+
 test('fetch(new Request(url, opts)) preserves method — single-argument form used to lose it', async () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://example.test/page' });
   const { window } = dom;
