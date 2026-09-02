@@ -8,6 +8,10 @@ export class XhrInterceptor implements Interceptor {
   private originalSetRequestHeader: XMLHttpRequest['setRequestHeader'] | null = null;
   private originalSend: XMLHttpRequest['send'] | null = null;
 
+  private installedOpen: XMLHttpRequest['open'] | null = null;
+  private installedSetRequestHeader: XMLHttpRequest['setRequestHeader'] | null = null;
+  private installedSend: XMLHttpRequest['send'] | null = null;
+
   constructor(
     private readonly ctx: CollectorContext,
     private readonly analyzer: ResponseAnalyzer,
@@ -64,6 +68,8 @@ export class XhrInterceptor implements Interceptor {
       ]);
     } as typeof proto.open;
 
+    this.installedOpen = proto.open;
+
     proto.setRequestHeader = function (
       this: XMLHttpRequest,
       name: string,
@@ -82,6 +88,8 @@ export class XhrInterceptor implements Interceptor {
 
       return originalSetRequestHeader.call(this, name, value);
     } as typeof proto.setRequestHeader;
+
+    this.installedSetRequestHeader = proto.setRequestHeader;
 
     proto.send = function (
       this: XMLHttpRequest,
@@ -184,6 +192,8 @@ export class XhrInterceptor implements Interceptor {
         throw err;
       }
     } as typeof proto.send;
+
+    this.installedSend = proto.send;
   }
 
   restore(): void {
@@ -191,23 +201,37 @@ export class XhrInterceptor implements Interceptor {
 
     const proto = this.original.prototype;
 
-    if (this.originalOpen) {
+    if (
+      this.originalOpen &&
+      this.installedOpen &&
+      proto.open === this.installedOpen
+    ) {
       proto.open = this.originalOpen;
     }
 
-    if (this.originalSetRequestHeader) {
+    if (
+      this.originalSetRequestHeader &&
+      this.installedSetRequestHeader &&
+      proto.setRequestHeader === this.installedSetRequestHeader
+    ) {
       proto.setRequestHeader = this.originalSetRequestHeader;
     }
 
-    if (this.originalSend) {
+    if (
+      this.originalSend &&
+      this.installedSend &&
+      proto.send === this.installedSend
+    ) {
       proto.send = this.originalSend;
     }
-
-    window.XMLHttpRequest = this.original;
 
     this.original = null;
     this.originalOpen = null;
     this.originalSetRequestHeader = null;
     this.originalSend = null;
+
+    this.installedOpen = null;
+    this.installedSetRequestHeader = null;
+    this.installedSend = null;
   }
 }

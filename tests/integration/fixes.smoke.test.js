@@ -420,6 +420,99 @@ test('XHR completion survives reopen from an earlier load listener', async () =>
   }
 });
 
+test('XHR cleanup preserves prototype wrappers installed after the collector', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const OriginalXHR = window.XMLHttpRequest;
+  const proto = OriginalXHR.prototype;
+
+  const nativeOpen = proto.open;
+  const nativeSetRequestHeader = proto.setRequestHeader;
+  const nativeSend = proto.send;
+
+  let collector;
+
+  try {
+    const { ResearchCollector } = await import('../../dist/collector.js');
+    collector = new ResearchCollector({ logLevel: 'error' });
+
+    const brtOpen = proto.open;
+    const brtSetRequestHeader = proto.setRequestHeader;
+    const brtSend = proto.send;
+
+    const laterOpen = function (...args) {
+      return Reflect.apply(brtOpen, this, args);
+    };
+
+    const laterSetRequestHeader = function (...args) {
+      return Reflect.apply(brtSetRequestHeader, this, args);
+    };
+
+    const laterSend = function (...args) {
+      return Reflect.apply(brtSend, this, args);
+    };
+
+    proto.open = laterOpen;
+    proto.setRequestHeader = laterSetRequestHeader;
+    proto.send = laterSend;
+
+    const laterConstructor = function LaterXMLHttpRequest() {};
+    window.XMLHttpRequest = laterConstructor;
+
+    collector.cleanup();
+    collector = null;
+
+    assert.equal(
+      window.XMLHttpRequest,
+      laterConstructor,
+      'cleanup must not overwrite a constructor installed after BRT',
+    );
+
+    assert.equal(
+      proto.open,
+      laterOpen,
+      'cleanup must not overwrite an open wrapper installed after BRT',
+    );
+
+    assert.equal(
+      proto.setRequestHeader,
+      laterSetRequestHeader,
+      'cleanup must not overwrite a setRequestHeader wrapper installed after BRT',
+    );
+
+    assert.equal(
+      proto.send,
+      laterSend,
+      'cleanup must not overwrite a send wrapper installed after BRT',
+    );
+  } finally {
+    collector?.cleanup();
+
+    window.XMLHttpRequest = OriginalXHR;
+    proto.open = nativeOpen;
+    proto.setRequestHeader = nativeSetRequestHeader;
+    proto.send = nativeSend;
+
+    global.performance = nativePerformance;
+  }
+});
+
 test('fetch(new Request(url, opts)) preserves method — single-argument form used to lose it', async () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://example.test/page' });
   const { window } = dom;
