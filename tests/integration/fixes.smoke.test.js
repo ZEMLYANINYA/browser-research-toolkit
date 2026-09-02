@@ -1230,6 +1230,144 @@ test('XHR capture survives preinstalled own methods with cached delegates', asyn
   }
 });
 
+test('XHR capture survives a partial prototype override with a cached delegate', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const NativeXHR = window.XMLHttpRequest;
+  const nativeProto = NativeXHR.prototype;
+
+  const cachedOpen = nativeProto.open;
+  const trulyNativeSend = nativeProto.send;
+
+  // Avoid real network I/O while preserving a delegate captured before BRT.
+  nativeProto.send = function () {};
+
+  const PartialPrototype =
+    Object.create(nativeProto);
+
+  Object.defineProperty(
+    PartialPrototype,
+    'open',
+    {
+      configurable: true,
+      writable: true,
+      value: function (...args) {
+        return Reflect.apply(
+          cachedOpen,
+          this,
+          args,
+        );
+      },
+    },
+  );
+
+  function PreinstalledXHR() {
+    const xhr = new NativeXHR();
+
+    Object.setPrototypeOf(
+      xhr,
+      PartialPrototype,
+    );
+
+    return xhr;
+  }
+
+  PreinstalledXHR.prototype =
+    PartialPrototype;
+
+  Object.setPrototypeOf(
+    PreinstalledXHR,
+    NativeXHR,
+  );
+
+  window.XMLHttpRequest =
+    PreinstalledXHR;
+
+  let collector;
+
+  try {
+    const { ResearchCollector } =
+      await import('../../dist/collector.js');
+
+    collector = new ResearchCollector({
+      logLevel: 'error',
+    });
+
+    const xhr =
+      new window.XMLHttpRequest();
+
+    assert.equal(
+      Object.getPrototypeOf(xhr),
+      PartialPrototype,
+      'fixture should return an XHR through the partial override prototype',
+    );
+
+    xhr.open(
+      'POST',
+      'https://example.test/api/partial-prototype-wrapper',
+    );
+
+    xhr.setRequestHeader(
+      'X-Partial-Wrapper',
+      'cached-open',
+    );
+
+    xhr.send('payload');
+
+    const requests =
+      collector.exportData().networkRequests;
+
+    const recorded = requests.find(
+      (request) =>
+        request.url.includes(
+          '/api/partial-prototype-wrapper',
+        ),
+    );
+
+    assert.ok(
+      recorded,
+      'XHR using a cached partial prototype override should still be captured',
+    );
+
+    assert.equal(
+      recorded.method,
+      'POST',
+    );
+
+    assert.equal(
+      recorded.headers?.['X-Partial-Wrapper'],
+      'cached-open',
+    );
+  } finally {
+    collector?.cleanup();
+
+    window.XMLHttpRequest =
+      NativeXHR;
+
+    nativeProto.send =
+      trulyNativeSend;
+
+    global.performance =
+      nativePerformance;
+  }
+});
+
 test('fetch(new Request(url, opts)) preserves method — single-argument form used to lose it', async () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://example.test/page' });
   const { window } = dom;

@@ -14,7 +14,10 @@ export class XhrInterceptor implements Interceptor {
   private installedSetRequestHeader: XMLHttpRequest['setRequestHeader'] | null = null;
   private installedSend: XMLHttpRequest['send'] | null = null;
 
-  private patchedPrototype: XMLHttpRequest | null = null;
+  private openOwner: XMLHttpRequest | null = null;
+  private setRequestHeaderOwner: XMLHttpRequest | null = null;
+  private sendOwner: XMLHttpRequest | null = null;
+
   private restoreWrappedInstances: (() => void) | null = null;
 
   constructor(
@@ -30,32 +33,42 @@ export class XhrInterceptor implements Interceptor {
     const analyzer = this.analyzer;
 
     /*
-     * A page may already have installed a constructor wrapper. The object
-     * returned by that constructor can have a prototype unrelated to
-     * OriginalXHR.prototype, so discover the prototype that actually owns
-     * the native-style XHR methods.
+     * A wrapped/subclassed XHR can override only part of the method surface.
+     * Discover each method owner independently so a cached override of open()
+     * cannot be skipped merely because send() lives deeper in the chain.
      */
     const probe = new OriginalXHR();
 
-    let proto = Object.getPrototypeOf(probe) as XMLHttpRequest | null;
+    const findMethodOwner = (
+      key: 'open' | 'setRequestHeader' | 'send',
+    ): XMLHttpRequest => {
+      let owner =
+        Object.getPrototypeOf(probe) as XMLHttpRequest | null;
 
-    while (
-      proto &&
-      (!Object.prototype.hasOwnProperty.call(proto, 'open') ||
-        !Object.prototype.hasOwnProperty.call(
-          proto,
-          'setRequestHeader',
-        ) ||
-        !Object.prototype.hasOwnProperty.call(proto, 'send'))
-    ) {
-      proto = Object.getPrototypeOf(proto) as XMLHttpRequest | null;
-    }
+      while (
+        owner &&
+        !Object.prototype.hasOwnProperty.call(owner, key)
+      ) {
+        owner =
+          Object.getPrototypeOf(owner) as XMLHttpRequest | null;
+      }
 
-    if (!proto) {
-      proto = OriginalXHR.prototype;
-    }
+      return owner ?? OriginalXHR.prototype;
+    };
 
-    this.patchedPrototype = proto;
+    const openOwner =
+      findMethodOwner('open');
+
+    const setRequestHeaderOwner =
+      findMethodOwner('setRequestHeader');
+
+    const sendOwner =
+      findMethodOwner('send');
+
+    this.openOwner = openOwner;
+    this.setRequestHeaderOwner =
+      setRequestHeaderOwner;
+    this.sendOwner = sendOwner;
 
     const requestDataByXhr =
       new WeakMap<XMLHttpRequest, RequestData>();
@@ -81,10 +94,14 @@ export class XhrInterceptor implements Interceptor {
         ? OriginalXHR.DONE
         : 4;
 
-    const originalOpen = proto.open;
+    const originalOpen =
+      openOwner.open;
+
     const originalSetRequestHeader =
-      proto.setRequestHeader;
-    const originalSend = proto.send;
+      setRequestHeaderOwner.setRequestHeader;
+
+    const originalSend =
+      sendOwner.send;
 
     this.originalOpen = originalOpen;
     this.originalSetRequestHeader =
@@ -388,7 +405,7 @@ export class XhrInterceptor implements Interceptor {
      * Prototype interception preserves Dynatrace/RUM-style calls such as
      * XMLHttpRequest.prototype.open.apply(xhr, args).
      */
-    proto.open = function (
+    openOwner.open = function (
       this: XMLHttpRequest,
       method: string,
       url: string,
@@ -414,11 +431,12 @@ export class XhrInterceptor implements Interceptor {
             [method, url, ...rest],
           ),
       );
-    } as typeof proto.open;
+    } as typeof openOwner.open;
 
-    this.installedOpen = proto.open;
+    this.installedOpen =
+      openOwner.open;
 
-    proto.setRequestHeader = function (
+    setRequestHeaderOwner.setRequestHeader = function (
       this: XMLHttpRequest,
       name: string,
       value: string,
@@ -444,12 +462,12 @@ export class XhrInterceptor implements Interceptor {
             value,
           ),
       );
-    } as typeof proto.setRequestHeader;
+    } as typeof setRequestHeaderOwner.setRequestHeader;
 
     this.installedSetRequestHeader =
-      proto.setRequestHeader;
+      setRequestHeaderOwner.setRequestHeader;
 
-    proto.send = function (
+    sendOwner.send = function (
       this: XMLHttpRequest,
       body?: Document | XMLHttpRequestBodyInit | null,
     ) {
@@ -469,9 +487,10 @@ export class XhrInterceptor implements Interceptor {
             body as never,
           ),
       );
-    } as typeof proto.send;
+    } as typeof sendOwner.send;
 
-    this.installedSend = proto.send;
+    this.installedSend =
+      sendOwner.send;
 
     /*
      * Some preinstalled monitoring constructors attach own XHR methods to
@@ -488,13 +507,98 @@ export class XhrInterceptor implements Interceptor {
       (...args: unknown[]) => unknown;
 
     interface OwnRestore {
-      xhr: XMLHttpRequest;
-      key: OwnMethodName;
       descriptor: PropertyDescriptor;
       installed: OwnMethod;
     }
 
-    const ownRestores: OwnRestore[] = [];
+    interface WeakReference<T extends object> {
+      deref(): T | undefined;
+    }
+
+    type WeakReferenceConstructor =
+      new <T extends object>(
+        target: T,
+      ) => WeakReference<T>;
+
+    const WeakRefCtor = (
+      globalThis as typeof globalThis & {
+        WeakRef?: WeakReferenceConstructor;
+      }
+    ).WeakRef;
+
+    /*
+     * Restoration metadata is weak-keyed, so it cannot retain XHR objects.
+     * WeakRef entries let cleanup restore wrappers on objects that are still
+     * alive without turning the tracking structure into an object-retention
+     * list of its own.
+     */
+    const ownRestores =
+      new WeakMap<
+        XMLHttpRequest,
+        Map<OwnMethodName, OwnRestore>
+      >();
+
+    const trackedInstances =
+      new WeakSet<XMLHttpRequest>();
+
+    const weakWrappedInstances =
+      new Set<WeakReference<XMLHttpRequest>>();
+
+    let wrappedSinceSweep = 0;
+
+    /*
+     * Instance wrappers keep only this mutable hook table. cleanup() nulls
+     * the hooks, releasing openThrough/sendThrough and therefore the
+     * collector context even if an old XHR object remains reachable.
+     */
+    const instanceHooks: {
+      open: typeof openThrough | null;
+      setRequestHeader:
+        typeof setRequestHeaderThrough | null;
+      send: typeof sendThrough | null;
+    } = {
+      open: openThrough,
+      setRequestHeader:
+        setRequestHeaderThrough,
+      send: sendThrough,
+    };
+
+    const trackWrappedInstance = (
+      xhr: XMLHttpRequest,
+    ) => {
+      if (
+        !WeakRefCtor ||
+        trackedInstances.has(xhr)
+      ) {
+        return;
+      }
+
+      trackedInstances.add(xhr);
+
+      weakWrappedInstances.add(
+        new WeakRefCtor(xhr),
+      );
+
+      wrappedSinceSweep++;
+
+      /*
+       * Periodically discard dead WeakRef records so the set itself does not
+       * grow forever during a long-running capture.
+       */
+      if (wrappedSinceSweep < 64) {
+        return;
+      }
+
+      for (
+        const ref of weakWrappedInstances
+      ) {
+        if (!ref.deref()) {
+          weakWrappedInstances.delete(ref);
+        }
+      }
+
+      wrappedSinceSweep = 0;
+    };
 
     const installOwnWrapper = (
       xhr: XMLHttpRequest,
@@ -546,12 +650,31 @@ export class XhrInterceptor implements Interceptor {
           },
         );
 
-        ownRestores.push({
-          xhr,
+        let restores =
+          ownRestores.get(xhr);
+
+        if (!restores) {
+          restores =
+            new Map<
+              OwnMethodName,
+              OwnRestore
+            >();
+
+          ownRestores.set(
+            xhr,
+            restores,
+          );
+        }
+
+        restores.set(
           key,
-          descriptor,
-          installed,
-        });
+          {
+            descriptor,
+            installed,
+          },
+        );
+
+        trackWrappedInstance(xhr);
       } catch {
         // Best-effort compatibility only.
       }
@@ -573,7 +696,22 @@ export class XhrInterceptor implements Interceptor {
             url: string,
             ...rest: unknown[]
           ) {
-            return openThrough(
+            const hook =
+              instanceHooks.open;
+
+            if (!hook) {
+              return Reflect.apply(
+                ownOpen,
+                this,
+                [
+                  method,
+                  url,
+                  ...rest,
+                ],
+              );
+            }
+
+            return hook(
               this,
               method,
               url,
@@ -612,7 +750,18 @@ export class XhrInterceptor implements Interceptor {
             name: string,
             value: string,
           ) {
-            return setRequestHeaderThrough(
+            const hook =
+              instanceHooks.setRequestHeader;
+
+            if (!hook) {
+              return Reflect.apply(
+                ownSetRequestHeader,
+                this,
+                [name, value],
+              );
+            }
+
+            return hook(
               this,
               name,
               value,
@@ -649,7 +798,18 @@ export class XhrInterceptor implements Interceptor {
             this: XMLHttpRequest,
             body?: Document | XMLHttpRequestBodyInit | null,
           ) {
-            return sendThrough(
+            const hook =
+              instanceHooks.send;
+
+            if (!hook) {
+              return Reflect.apply(
+                ownSend,
+                this,
+                [body],
+              );
+            }
+
+            return hook(
               this,
               body,
               () => {
@@ -673,38 +833,67 @@ export class XhrInterceptor implements Interceptor {
 
     this.restoreWrappedInstances =
       () => {
-        for (
-          const entry of ownRestores
-        ) {
-          const current =
-            Object.getOwnPropertyDescriptor(
-              entry.xhr,
-              entry.key,
-            );
+        /*
+         * First sever every shared hook back to the collector. This also
+         * makes wrappers harmless on runtimes without WeakRef support.
+         */
+        instanceHooks.open = null;
+        instanceHooks.setRequestHeader =
+          null;
+        instanceHooks.send = null;
 
-          /*
-           * Preserve instrumentation installed after BRT. Restore an own
-           * method only while the property still points to BRT's wrapper.
-           */
-          if (
-            current?.value !==
-            entry.installed
-          ) {
+        for (
+          const ref of weakWrappedInstances
+        ) {
+          const xhr = ref.deref();
+
+          if (!xhr) {
             continue;
           }
 
-          try {
-            Object.defineProperty(
-              entry.xhr,
-              entry.key,
-              entry.descriptor,
-            );
-          } catch {
-            // Best-effort cleanup.
+          const restores =
+            ownRestores.get(xhr);
+
+          if (!restores) {
+            continue;
+          }
+
+          for (
+            const [
+              key,
+              entry,
+            ] of restores
+          ) {
+            const current =
+              Object.getOwnPropertyDescriptor(
+                xhr,
+                key,
+              );
+
+            /*
+             * Preserve wrappers installed after BRT. Restore only a slot
+             * that still points directly to BRT's own instance wrapper.
+             */
+            if (
+              current?.value !==
+              entry.installed
+            ) {
+              continue;
+            }
+
+            try {
+              Object.defineProperty(
+                xhr,
+                key,
+                entry.descriptor,
+              );
+            } catch {
+              // Best-effort cleanup.
+            }
           }
         }
 
-        ownRestores.length = 0;
+        weakWrappedInstances.clear();
       };
 
     /*
@@ -758,13 +947,21 @@ export class XhrInterceptor implements Interceptor {
   restore(): void {
     if (
       !this.original ||
-      !this.patchedPrototype
+      !this.openOwner ||
+      !this.setRequestHeaderOwner ||
+      !this.sendOwner
     ) {
       return;
     }
 
-    const proto =
-      this.patchedPrototype;
+    const openOwner =
+      this.openOwner;
+
+    const setRequestHeaderOwner =
+      this.setRequestHeaderOwner;
+
+    const sendOwner =
+      this.sendOwner;
 
     this.restoreWrappedInstances?.();
 
@@ -780,30 +977,30 @@ export class XhrInterceptor implements Interceptor {
     if (
       this.originalOpen &&
       this.installedOpen &&
-      proto.open ===
+      openOwner.open ===
         this.installedOpen
     ) {
-      proto.open =
+      openOwner.open =
         this.originalOpen;
     }
 
     if (
       this.originalSetRequestHeader &&
       this.installedSetRequestHeader &&
-      proto.setRequestHeader ===
+      setRequestHeaderOwner.setRequestHeader ===
         this.installedSetRequestHeader
     ) {
-      proto.setRequestHeader =
+      setRequestHeaderOwner.setRequestHeader =
         this.originalSetRequestHeader;
     }
 
     if (
       this.originalSend &&
       this.installedSend &&
-      proto.send ===
+      sendOwner.send ===
         this.installedSend
     ) {
-      proto.send =
+      sendOwner.send =
         this.originalSend;
     }
 
@@ -820,7 +1017,10 @@ export class XhrInterceptor implements Interceptor {
       null;
     this.installedSend = null;
 
-    this.patchedPrototype = null;
+    this.openOwner = null;
+    this.setRequestHeaderOwner = null;
+    this.sendOwner = null;
+
     this.restoreWrappedInstances =
       null;
   }
