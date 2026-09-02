@@ -137,6 +137,7 @@ export class XhrInterceptor implements Interceptor {
         xhr.readyState === doneState
       ) {
         let completedStatus = 0;
+        let completedResponseUrl = '';
 
         try {
           completedStatus = xhr.status;
@@ -144,7 +145,23 @@ export class XhrInterceptor implements Interceptor {
           completedStatus = 0;
         }
 
-        if (completedStatus !== 0) {
+        try {
+          completedResponseUrl =
+            xhr.responseURL || '';
+        } catch {
+          completedResponseUrl = '';
+        }
+
+        /*
+         * HTTP success exposes a non-zero status. Successful non-HTTP
+         * requests such as file: may legitimately complete with status 0,
+         * but still expose their final response URL. Network errors,
+         * timeouts and aborts retain status 0 without a response URL.
+         */
+        if (
+          completedStatus !== 0 ||
+          completedResponseUrl !== ''
+        ) {
           previousFinalize();
         }
       }

@@ -1368,6 +1368,146 @@ test('XHR capture survives a partial prototype override with a cached delegate',
   }
 });
 
+test('XHR successful zero-status completion survives reopen from DONE readystatechange', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const proto = window.XMLHttpRequest.prototype;
+  const nativeSend = proto.send;
+
+  proto.send = function () {};
+
+  let collector;
+
+  try {
+    const { ResearchCollector } =
+      await import('../../dist/collector.js');
+
+    collector = new ResearchCollector({
+      logLevel: 'error',
+    });
+
+    const xhr = new window.XMLHttpRequest();
+
+    let syntheticReadyState =
+      window.XMLHttpRequest.UNSENT;
+
+    let syntheticStatus = 0;
+    let syntheticStatusText = '';
+
+    let syntheticResponseUrl =
+      'file:///tmp/zero-status-first.json';
+
+    let reopened = false;
+
+    Object.defineProperty(xhr, 'readyState', {
+      configurable: true,
+      get: () => syntheticReadyState,
+    });
+
+    Object.defineProperty(xhr, 'status', {
+      configurable: true,
+      get: () => syntheticStatus,
+    });
+
+    Object.defineProperty(xhr, 'statusText', {
+      configurable: true,
+      get: () => syntheticStatusText,
+    });
+
+    Object.defineProperty(xhr, 'responseURL', {
+      configurable: true,
+      get: () => syntheticResponseUrl,
+    });
+
+    xhr.addEventListener('readystatechange', () => {
+      if (
+        reopened ||
+        syntheticReadyState !==
+          window.XMLHttpRequest.DONE
+      ) {
+        return;
+      }
+
+      reopened = true;
+
+      xhr.open(
+        'GET',
+        'https://example.test/api/zero-status-second',
+      );
+
+      syntheticReadyState =
+        window.XMLHttpRequest.OPENED;
+
+      syntheticStatus = 0;
+      syntheticStatusText = '';
+      syntheticResponseUrl = '';
+    });
+
+    xhr.open(
+      'GET',
+      'file:///tmp/zero-status-first.json',
+    );
+
+    syntheticReadyState =
+      window.XMLHttpRequest.OPENED;
+
+    xhr.send();
+
+    syntheticReadyState =
+      window.XMLHttpRequest.DONE;
+
+    syntheticStatus = 0;
+    syntheticStatusText = '';
+    syntheticResponseUrl =
+      'file:///tmp/zero-status-first.json';
+
+    xhr.dispatchEvent(
+      new window.Event('readystatechange'),
+    );
+
+    const requests =
+      collector.exportData().networkRequests;
+
+    const first = requests.find((request) =>
+      request.url.includes(
+        'zero-status-first.json',
+      ),
+    );
+
+    assert.ok(
+      first,
+      'successful zero-status request should be recorded',
+    );
+
+    assert.equal(
+      first.status,
+      0,
+      'successful status-0 response must be finalized before reopen',
+    );
+  } finally {
+    collector?.cleanup();
+
+    proto.send = nativeSend;
+    global.performance = nativePerformance;
+  }
+});
+
 test('fetch(new Request(url, opts)) preserves method — single-argument form used to lose it', async () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://example.test/page' });
   const { window } = dom;
