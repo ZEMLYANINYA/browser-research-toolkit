@@ -23,6 +23,7 @@ export class XhrInterceptor implements Interceptor {
 
     const requestDataByXhr = new WeakMap<XMLHttpRequest, RequestData>();
     const cleanupByXhr = new WeakMap<XMLHttpRequest, () => void>();
+    const finalizeByXhr = new WeakMap<XMLHttpRequest, () => void>();
 
     const originalOpen = proto.open;
     const originalSetRequestHeader = proto.setRequestHeader;
@@ -38,7 +39,13 @@ export class XhrInterceptor implements Interceptor {
       url: string,
       ...rest: unknown[]
     ) {
-      cleanupByXhr.get(this)?.();
+      const finalizePrevious = finalizeByXhr.get(this);
+
+      if (finalizePrevious && this.readyState === OriginalXHR.DONE) {
+        finalizePrevious();
+      } else {
+        cleanupByXhr.get(this)?.();
+      }
 
       const requestData: RequestData = {
         id: ctx.generateId(),
@@ -115,13 +122,19 @@ export class XhrInterceptor implements Interceptor {
         if (cleanupByXhr.get(this) === cleanupListeners) {
           cleanupByXhr.delete(this);
         }
+
+        if (finalizeByXhr.get(this) === finalizeResponse) {
+          finalizeByXhr.delete(this);
+        }
       };
 
-      const handleLoad = () => {
-        cleanupListeners();
+      const finalizeResponse = () => {
+        if (settled) return;
 
         requestData.status = this.status;
         requestData.statusText = this.statusText;
+
+        cleanupListeners();
 
         analyzer
           .analyzeXhrResponse(this, requestData)
@@ -132,6 +145,10 @@ export class XhrInterceptor implements Interceptor {
               { requestId: id },
             ),
           );
+      };
+
+      const handleLoad = () => {
+        finalizeResponse();
       };
 
       const handleError = () => {
@@ -158,6 +175,7 @@ export class XhrInterceptor implements Interceptor {
       this.addEventListener('timeout', handleTimeout);
 
       cleanupByXhr.set(this, cleanupListeners);
+      finalizeByXhr.set(this, finalizeResponse);
 
       try {
         return originalSend.call(this, body as never);

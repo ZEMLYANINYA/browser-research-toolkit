@@ -325,6 +325,101 @@ test('XHR per-send listeners are removed before a reused instance starts another
   }
 });
 
+test('XHR completion survives reopen from an earlier load listener', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const nativeSend = window.XMLHttpRequest.prototype.send;
+
+  // Keep the test local and deterministic. The interceptor captures this
+  // stand-in during installation; completion is dispatched manually below.
+  window.XMLHttpRequest.prototype.send = function () {};
+
+  let collector;
+  try {
+    const { ResearchCollector } = await import('../../dist/collector.js');
+    collector = new ResearchCollector({ logLevel: 'error' });
+
+    const xhr = new window.XMLHttpRequest();
+
+    let syntheticReadyState = window.XMLHttpRequest.UNSENT;
+    let syntheticStatus = 0;
+    let syntheticStatusText = '';
+
+    Object.defineProperty(xhr, 'readyState', {
+      configurable: true,
+      get: () => syntheticReadyState,
+    });
+
+    Object.defineProperty(xhr, 'status', {
+      configurable: true,
+      get: () => syntheticStatus,
+    });
+
+    Object.defineProperty(xhr, 'statusText', {
+      configurable: true,
+      get: () => syntheticStatusText,
+    });
+
+    // Registered before send(), therefore this application listener runs
+    // before the collector's per-send load listener.
+    xhr.addEventListener('load', () => {
+      xhr.open('GET', 'https://example.test/api/reopen-second');
+      syntheticReadyState = window.XMLHttpRequest.OPENED;
+      syntheticStatus = 0;
+      syntheticStatusText = '';
+    });
+
+    xhr.open('GET', 'https://example.test/api/reopen-first');
+    syntheticReadyState = window.XMLHttpRequest.OPENED;
+
+    xhr.send();
+
+    syntheticReadyState = window.XMLHttpRequest.DONE;
+    syntheticStatus = 204;
+    syntheticStatusText = 'No Content';
+
+    xhr.dispatchEvent(new window.Event('load'));
+
+    const requests = collector.exportData().networkRequests;
+    const first = requests.find((request) =>
+      request.url.includes('/api/reopen-first'),
+    );
+
+    assert.ok(first, 'first request should have been recorded');
+
+    assert.equal(
+      first.status,
+      204,
+      'completed request should retain response status even if an earlier listener reopens the XHR',
+    );
+
+    assert.equal(
+      first.statusText,
+      'No Content',
+      'completed request should retain response status text before reuse',
+    );
+  } finally {
+    collector?.cleanup();
+    window.XMLHttpRequest.prototype.send = nativeSend;
+    global.performance = nativePerformance;
+  }
+});
+
 test('fetch(new Request(url, opts)) preserves method — single-argument form used to lose it', async () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://example.test/page' });
   const { window } = dom;
