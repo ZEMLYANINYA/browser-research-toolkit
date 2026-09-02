@@ -106,6 +106,93 @@ test('XHR setRequestHeader is captured (was previously invisible to the collecto
   }
 });
 
+test('XHR constructor preserves native surface for Dynatrace-style prototype calls', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const OriginalXHR = window.XMLHttpRequest;
+  const originalPrototype = OriginalXHR.prototype;
+  const originalConstants = {
+    UNSENT: OriginalXHR.UNSENT,
+    OPENED: OriginalXHR.OPENED,
+    HEADERS_RECEIVED: OriginalXHR.HEADERS_RECEIVED,
+    LOADING: OriginalXHR.LOADING,
+    DONE: OriginalXHR.DONE,
+  };
+
+  let collector;
+  try {
+    const { ResearchCollector } = await import('../../dist/collector.js');
+    collector = new ResearchCollector({ logLevel: 'error' });
+
+    assert.equal(
+      window.XMLHttpRequest.prototype,
+      originalPrototype,
+      'replacement constructor should preserve the native XMLHttpRequest prototype',
+    );
+
+    assert.equal(
+      typeof window.XMLHttpRequest.prototype.open,
+      'function',
+      'XMLHttpRequest.prototype.open should remain callable',
+    );
+
+    for (const [name, value] of Object.entries(originalConstants)) {
+      assert.equal(
+        window.XMLHttpRequest[name],
+        value,
+        'XMLHttpRequest.' + name + ' should preserve its native value',
+      );
+    }
+
+    const xhr = new window.XMLHttpRequest();
+
+    assert.ok(
+      xhr instanceof OriginalXHR,
+      'new XMLHttpRequest() should return a real native XHR instance',
+    );
+
+    assert.ok(
+      xhr instanceof window.XMLHttpRequest,
+      'new XMLHttpRequest() should satisfy instanceof against the installed constructor',
+    );
+
+    assert.doesNotThrow(
+      () => {
+        window.XMLHttpRequest.prototype.open.apply(xhr, [
+          'GET',
+          'https://example.test/api/dynatrace-style',
+        ]);
+      },
+      'Dynatrace-style XMLHttpRequest.prototype.open.apply(xhr, args) should work',
+    );
+  } finally {
+    collector?.cleanup();
+
+    assert.equal(
+      window.XMLHttpRequest,
+      OriginalXHR,
+      'cleanup should restore the exact original XMLHttpRequest constructor',
+    );
+
+    global.performance = nativePerformance;
+  }
+});
+
 test('fetch(new Request(url, opts)) preserves method — single-argument form used to lose it', async () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://example.test/page' });
   const { window } = dom;

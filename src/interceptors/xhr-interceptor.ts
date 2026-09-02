@@ -16,7 +16,7 @@ export class XhrInterceptor implements Interceptor {
     const ctx = this.ctx;
     const analyzer = this.analyzer;
 
-    window.XMLHttpRequest = function (this: XMLHttpRequest) {
+    const WrappedXHR = function (this: XMLHttpRequest) {
       const xhr = new OriginalXHR();
       const id = ctx.generateId();
       let requestData: RequestData = { id, type: 'xhr', url: '', timestamp: Date.now() };
@@ -68,6 +68,30 @@ export class XhrInterceptor implements Interceptor {
 
       return xhr;
     } as unknown as typeof window.XMLHttpRequest;
+
+    // Preserve the observable native constructor surface. Third-party
+    // instrumentation may call XMLHttpRequest.prototype.open.apply(...)
+    // or read the ready-state constants directly from the constructor.
+    (WrappedXHR as unknown as { prototype: XMLHttpRequest }).prototype =
+      OriginalXHR.prototype;
+
+    Object.setPrototypeOf(WrappedXHR, OriginalXHR);
+
+    for (const name of [
+      'UNSENT',
+      'OPENED',
+      'HEADERS_RECEIVED',
+      'LOADING',
+      'DONE',
+    ] as const) {
+      const descriptor = Object.getOwnPropertyDescriptor(OriginalXHR, name);
+
+      if (descriptor) {
+        Object.defineProperty(WrappedXHR, name, descriptor);
+      }
+    }
+
+    window.XMLHttpRequest = WrappedXHR;
   }
 
   restore(): void {
