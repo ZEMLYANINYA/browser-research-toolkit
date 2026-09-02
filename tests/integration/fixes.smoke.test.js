@@ -822,6 +822,414 @@ test('XHR duplicate send preserves the first in-flight request lifecycle', async
   }
 });
 
+test('XHR completion survives reopen from DONE readystatechange', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const proto = window.XMLHttpRequest.prototype;
+  const nativeSend = proto.send;
+
+  // Keep this local and deterministic. Completion events are dispatched
+  // manually so the ordering is entirely under the test's control.
+  proto.send = function () {};
+
+  let collector;
+
+  try {
+    const { ResearchCollector } =
+      await import('../../dist/collector.js');
+
+    collector = new ResearchCollector({
+      logLevel: 'error',
+    });
+
+    const xhr = new window.XMLHttpRequest();
+
+    let syntheticReadyState =
+      window.XMLHttpRequest.UNSENT;
+
+    let syntheticStatus = 0;
+    let syntheticStatusText = '';
+    let reopened = false;
+
+    Object.defineProperty(xhr, 'readyState', {
+      configurable: true,
+      get: () => syntheticReadyState,
+    });
+
+    Object.defineProperty(xhr, 'status', {
+      configurable: true,
+      get: () => syntheticStatus,
+    });
+
+    Object.defineProperty(xhr, 'statusText', {
+      configurable: true,
+      get: () => syntheticStatusText,
+    });
+
+    xhr.addEventListener('readystatechange', () => {
+      if (
+        reopened ||
+        syntheticReadyState !==
+          window.XMLHttpRequest.DONE
+      ) {
+        return;
+      }
+
+      reopened = true;
+
+      xhr.open(
+        'GET',
+        'https://example.test/api/readystatechange-second',
+      );
+
+      // open() has now reset the XHR for the replacement request.
+      syntheticReadyState =
+        window.XMLHttpRequest.OPENED;
+
+      syntheticStatus = 0;
+      syntheticStatusText = '';
+    });
+
+    xhr.open(
+      'GET',
+      'https://example.test/api/readystatechange-first',
+    );
+
+    syntheticReadyState =
+      window.XMLHttpRequest.OPENED;
+
+    xhr.send();
+
+    syntheticReadyState =
+      window.XMLHttpRequest.DONE;
+
+    syntheticStatus = 200;
+    syntheticStatusText = 'OK';
+
+    // readystatechange(DONE) occurs before load.
+    xhr.dispatchEvent(
+      new window.Event('readystatechange'),
+    );
+
+    // The old request's load is now attempted after the application
+    // already reopened the XHR.
+    xhr.dispatchEvent(
+      new window.Event('load'),
+    );
+
+    const requests =
+      collector.exportData().networkRequests;
+
+    const first = requests.find((request) =>
+      request.url.includes(
+        '/api/readystatechange-first',
+      ),
+    );
+
+    assert.ok(
+      first,
+      'first request should have been recorded',
+    );
+
+    assert.equal(
+      first.status,
+      200,
+      'DONE request must retain status when reopened from readystatechange before load',
+    );
+
+    assert.equal(
+      first.statusText,
+      'OK',
+      'DONE request must retain status text when reopened from readystatechange before load',
+    );
+  } finally {
+    collector?.cleanup();
+
+    proto.send = nativeSend;
+    global.performance = nativePerformance;
+  }
+});
+
+test('XHR rejected replacement open preserves the prior in-flight lifecycle', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const proto = window.XMLHttpRequest.prototype;
+  const nativeOpen = proto.open;
+  const nativeSend = proto.send;
+
+  proto.open = function (method, url, ...rest) {
+    if (String(method).toUpperCase() === 'CONNECT') {
+      throw new window.DOMException(
+        'Forbidden XHR method',
+        'SecurityError',
+      );
+    }
+
+    return Reflect.apply(
+      nativeOpen,
+      this,
+      [method, url, ...rest],
+    );
+  };
+
+  // Keep the first request pending until we dispatch load manually.
+  proto.send = function () {};
+
+  let collector;
+
+  try {
+    const { ResearchCollector } =
+      await import('../../dist/collector.js');
+
+    collector = new ResearchCollector({
+      logLevel: 'error',
+    });
+
+    const xhr = new window.XMLHttpRequest();
+
+    let syntheticStatus = 0;
+    let syntheticStatusText = '';
+
+    Object.defineProperty(xhr, 'status', {
+      configurable: true,
+      get: () => syntheticStatus,
+    });
+
+    Object.defineProperty(xhr, 'statusText', {
+      configurable: true,
+      get: () => syntheticStatusText,
+    });
+
+    xhr.open(
+      'GET',
+      'https://example.test/api/open-first',
+    );
+
+    xhr.send();
+
+    assert.throws(
+      () =>
+        xhr.open(
+          'CONNECT',
+          'https://example.test/api/open-rejected',
+        ),
+      (error) => error?.name === 'SecurityError',
+      'replacement open should surface the native validation error',
+    );
+
+    syntheticStatus = 200;
+    syntheticStatusText = 'OK';
+
+    xhr.dispatchEvent(new window.Event('load'));
+
+    const requests =
+      collector.exportData().networkRequests;
+
+    const first = requests.find((request) =>
+      request.url.includes('/api/open-first'),
+    );
+
+    assert.ok(
+      first,
+      'first request should remain recorded',
+    );
+
+    assert.equal(
+      first.status,
+      200,
+      'rejected replacement open must not detach the first request lifecycle',
+    );
+
+    assert.equal(
+      first.statusText,
+      'OK',
+      'first request response metadata must survive a rejected replacement open',
+    );
+  } finally {
+    collector?.cleanup();
+
+    proto.open = nativeOpen;
+    proto.send = nativeSend;
+    global.performance = nativePerformance;
+  }
+});
+
+test('XHR capture survives preinstalled own methods with cached delegates', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://example.test/page',
+  });
+
+  const { window } = dom;
+  baseGlobals(window);
+
+  window.fetch = async () => ({
+    headers: { get: () => null },
+    status: 204,
+    clone() {
+      return this;
+    },
+    async text() {
+      return '';
+    },
+  });
+
+  const NativeXHR = window.XMLHttpRequest;
+  const proto = NativeXHR.prototype;
+
+  const cachedOpen = proto.open;
+  const cachedSetRequestHeader = proto.setRequestHeader;
+  const trulyNativeSend = proto.send;
+
+  // Stand-in cached before BRT installs. Instance send() will retain this
+  // reference even after BRT later patches the native prototype.
+  proto.send = function () {};
+  const cachedSend = proto.send;
+
+  function PreinstalledXHR() {
+    const xhr = new NativeXHR();
+
+    Object.defineProperties(xhr, {
+      open: {
+        configurable: true,
+        writable: true,
+        value: function (...args) {
+          return Reflect.apply(
+            cachedOpen,
+            this,
+            args,
+          );
+        },
+      },
+
+      setRequestHeader: {
+        configurable: true,
+        writable: true,
+        value: function (...args) {
+          return Reflect.apply(
+            cachedSetRequestHeader,
+            this,
+            args,
+          );
+        },
+      },
+
+      send: {
+        configurable: true,
+        writable: true,
+        value: function (...args) {
+          return Reflect.apply(
+            cachedSend,
+            this,
+            args,
+          );
+        },
+      },
+    });
+
+    return xhr;
+  }
+
+  PreinstalledXHR.prototype = NativeXHR.prototype;
+  Object.setPrototypeOf(PreinstalledXHR, NativeXHR);
+
+  window.XMLHttpRequest = PreinstalledXHR;
+
+  let collector;
+
+  try {
+    const { ResearchCollector } =
+      await import('../../dist/collector.js');
+
+    collector = new ResearchCollector({
+      logLevel: 'error',
+    });
+
+    const xhr = new window.XMLHttpRequest();
+
+    assert.ok(
+      Object.hasOwn(xhr, 'open'),
+      'fixture should expose an own open wrapper',
+    );
+
+    assert.ok(
+      Object.hasOwn(xhr, 'send'),
+      'fixture should expose an own send wrapper',
+    );
+
+    xhr.open(
+      'POST',
+      'https://example.test/api/own-cached-wrapper',
+    );
+
+    xhr.setRequestHeader(
+      'X-Own-Wrapper',
+      'cached-delegate',
+    );
+
+    xhr.send('payload');
+
+    const requests =
+      collector.exportData().networkRequests;
+
+    const recorded = requests.find((request) =>
+      request.url.includes(
+        '/api/own-cached-wrapper',
+      ),
+    );
+
+    assert.ok(
+      recorded,
+      'XHR using cached own-method delegates should still be captured',
+    );
+
+    assert.equal(recorded.method, 'POST');
+
+    assert.equal(
+      recorded.headers?.['X-Own-Wrapper'],
+      'cached-delegate',
+    );
+  } finally {
+    collector?.cleanup();
+
+    window.XMLHttpRequest = NativeXHR;
+    proto.send = trulyNativeSend;
+
+    global.performance = nativePerformance;
+  }
+});
+
 test('fetch(new Request(url, opts)) preserves method — single-argument form used to lose it', async () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://example.test/page' });
   const { window } = dom;
