@@ -359,6 +359,8 @@ function renderSources(session) {
       sourceOriginPattern(source.url);
 
     const canRequestHost =
+      session?.running === true &&
+      session?.importedReadOnly !== true &&
       source.fetchPolicy?.decision === 'blocked' &&
       source.firstParty !== true &&
       Boolean(originPattern);
@@ -683,6 +685,18 @@ $('sources').addEventListener(
       permissionButton.dataset.sourceOrigin;
 
     if (!originPattern) return;
+
+    /*
+     * Never expand persistent Chrome host access from a stale,
+     * stopped, or imported read-only session view.
+     */
+    if (
+      currentSession?.running !== true ||
+      currentSession?.importedReadOnly === true
+    ) {
+      await refresh();
+      return;
+    }
 
     permissionButton.disabled = true;
 

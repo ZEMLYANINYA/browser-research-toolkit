@@ -133,3 +133,56 @@ test('first-party source collection relies on current-tab authority without opti
     /sourcePolicy\.firstParty[\s\S]{0,300}host-permission-required/
   );
 });
+
+test('host permission actions are hidden for stopped and imported sessions', () => {
+  assert.match(
+    panel,
+    /session\?\.running === true/
+  );
+
+  assert.match(
+    panel,
+    /session\?\.importedReadOnly !== true/
+  );
+});
+
+test('host permission click rechecks live session state before requesting Chrome permission', () => {
+  const clickStart = panel.indexOf(
+    "$('sources').addEventListener"
+  );
+
+  assert.ok(clickStart >= 0);
+
+  const clickEnd = panel.indexOf(
+    "$('startBtn').addEventListener",
+    clickStart
+  );
+
+  assert.ok(clickEnd > clickStart);
+
+  const block = panel.slice(
+    clickStart,
+    clickEnd
+  );
+
+  const liveGuard = block.indexOf(
+    'currentSession?.running !== true'
+  );
+
+  const permissionRequest = block.indexOf(
+    'chrome.permissions.request'
+  );
+
+  assert.ok(liveGuard >= 0);
+  assert.ok(permissionRequest >= 0);
+
+  assert.ok(
+    liveGuard < permissionRequest,
+    'live-session guard must run before persistent host permission request'
+  );
+
+  assert.match(
+    block,
+    /currentSession\?\.importedReadOnly === true/
+  );
+});
