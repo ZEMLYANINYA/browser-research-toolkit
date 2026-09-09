@@ -1,0 +1,47 @@
+[
+  {
+    "id": "authorization-header",
+    "input": {
+      "Authorization": "Bearer SYNTHETIC_AUTH_001",
+      "X-Custom-Trace": "keep-trace"
+    },
+    "expected": {
+      "Authorization": "[REDACTED]",
+      "X-Custom-Trace": "keep-trace"
+    }
+  },
+  {
+    "id": "api-key-header",
+    "input": {
+      "X-API-Key": "SYNTHETIC_KEY_002",
+      "Accept": "application/json"
+    },
+    "expected": {
+      "X-API-Key": "[REDACTED]",
+      "Accept": "application/json"
+    }
+  },
+  {
+    "id": "session-like-header",
+    "input": {
+      "X-Session-Id": "SYNTHETIC_SESSION_003",
+      "Cache-Control": "no-cache"
+    },
+    "expected": {
+      "X-Session-Id": "[REDACTED]",
+      "Cache-Control": "no-cache"
+    }
+  },
+  {
+    "id": "cookie-header-current-core-behavior",
+    "input": {
+      "Cookie": "session=SYNTH_COOKIE_004",
+      "X-Custom": "keep"
+    },
+    "expected": {
+      "Cookie": "session=SYNTH_COOKIE_004",
+      "X-Custom": "keep"
+    },
+    "knownWeakness": "Core sanitizeHeaders currently does not apply SENSITIVE_PATTERNS.cookies."
+  }
+]
