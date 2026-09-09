@@ -4,3 +4,6 @@ research_*.json
 *.har
 .snapshots/
 .claude/
+
+# Local research/baseline artifacts
+artifacts/
