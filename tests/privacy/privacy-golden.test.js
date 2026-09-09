@@ -31,6 +31,12 @@ const urlCases =
 const headerCases =
   readJson('fixtures/headers/cases.json');
 
+const objectCases =
+  readJson('fixtures/json/object-cases.json');
+
+const bodyCases =
+  readJson('fixtures/json/body-cases.json');
+
 for (const fixture of urlCases) {
   test(`privacy golden URL: ${fixture.id}`, () => {
     const sanitizer = makeSanitizer();
@@ -51,6 +57,37 @@ for (const fixture of headerCases) {
 
     const actual =
       sanitizer.sanitizeHeaders(fixture.input);
+
+    assert.deepEqual(
+      actual,
+      fixture.expected
+    );
+  });
+}
+
+for (const fixture of objectCases) {
+  test(`privacy golden object: ${fixture.id}`, () => {
+    const sanitizer = makeSanitizer();
+
+    const actual =
+      sanitizer.sanitizeObject(fixture.input);
+
+    assert.deepEqual(
+      actual,
+      fixture.expected
+    );
+  });
+}
+
+for (const fixture of bodyCases) {
+  test(`privacy golden body: ${fixture.id}`, () => {
+    const sanitizer = makeSanitizer();
+
+    const actual =
+      sanitizer.sanitizeBody(
+        fixture.input,
+        fixture.url
+      );
 
     assert.deepEqual(
       actual,
