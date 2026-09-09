@@ -35,10 +35,10 @@ test('initial START injects only the isolated bridge into all existing frames', 
   );
 });
 
-test('hard navigation reinjects bridge only into the committed frame', () => {
+test('hard navigation reinjects bridge only into the committed document', () => {
   assert.match(
     background,
-    /await\s+injectBridge\(details\.tabId,\s*details\.frameId\)/
+    /await\s+injectBridge\(\s*details\.tabId,\s*details\.frameId,\s*details\.documentId\s*\|\|\s*null\s*\)/
   );
 });
 
@@ -72,11 +72,19 @@ test('transient removed-frame races do not become injection failures', () => {
     /const\s+transientFrameRace\s*=/
   );
 
-  assert.ok(
-    background.includes(
-      '/frame with (?:id )?\\d+ was removed|no frame with id \\d+/i.test('
-    ),
-    'known removed-frame navigation races must be recognized explicitly'
+  assert.match(
+    background,
+    /frame with \(\?:id \)\?\\d\+ was removed/
+  );
+
+  assert.match(
+    background,
+    /no frame with id \\d\+/
+  );
+
+  assert.match(
+    background,
+    /no document with id/
   );
 
   assert.match(
@@ -348,5 +356,81 @@ test('bridge-ready commands are bound to the announcing document', () => {
   assert.match(
     block,
     /sendCommand\([\s\S]*?'STOP'[\s\S]*?frameId,\s*documentId/
+  );
+});
+
+test('top-frame reinjection failure cannot leave capture reported as running', () => {
+  const navigationStart = background.indexOf(
+    'chrome.webNavigation?.onCommitted?.addListener'
+  );
+
+  assert.ok(navigationStart >= 0);
+
+  const navigationEnd = background.indexOf(
+    'function sanitizeNavigationUrl',
+    navigationStart
+  );
+
+  assert.ok(navigationEnd > navigationStart);
+
+  const block = background.slice(
+    navigationStart,
+    navigationEnd
+  );
+
+  assert.match(
+    block,
+    /if\s*\(navigation\.isTopFrame\)/
+  );
+
+  assert.match(
+    block,
+    /session\.stopRequested\s*=\s*true/
+  );
+
+  assert.match(
+    block,
+    /session\.running\s*=\s*false/
+  );
+
+  assert.match(
+    block,
+    /session\.runState\s*=\s*['"]interrupted['"]/
+  );
+
+  assert.match(
+    block,
+    /capture-continuity-lost/
+  );
+});
+
+test('subframe reinjection failure does not interrupt the whole session', () => {
+  const navigationStart = background.indexOf(
+    'chrome.webNavigation?.onCommitted?.addListener'
+  );
+
+  assert.ok(navigationStart >= 0);
+
+  const navigationEnd = background.indexOf(
+    'function sanitizeNavigationUrl',
+    navigationStart
+  );
+
+  const block = background.slice(
+    navigationStart,
+    navigationEnd
+  );
+
+  const fatalStart = block.indexOf(
+    'if (navigation.isTopFrame)'
+  );
+
+  assert.ok(fatalStart >= 0);
+
+  const fatalBlock = block.slice(fatalStart);
+
+  assert.match(
+    fatalBlock,
+    /session\.running\s*=\s*false/
   );
 });

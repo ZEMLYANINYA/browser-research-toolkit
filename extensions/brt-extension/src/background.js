@@ -1935,11 +1935,16 @@ chrome.webNavigation?.onCommitted?.addListener(async details => {
 
   if (/^https?:/i.test(details.url || '')) {
     try {
-      await injectBridge(details.tabId, details.frameId);
+      await injectBridge(
+        details.tabId,
+        details.frameId,
+        details.documentId || null
+      );
     } catch (error) {
       const message = String(error?.message || error);
+
       const transientFrameRace =
-        /frame with (?:id )?\d+ was removed|no frame with id \d+/i.test(
+        /frame with (?:id )?\d+ was removed|no frame with id \d+|no document with id|document with (?:id )?.+ was removed/i.test(
           message
         );
 
@@ -1949,6 +1954,44 @@ chrome.webNavigation?.onCommitted?.addListener(async details => {
           documentId: details.documentId || null,
           message
         });
+
+        /*
+         * A top-frame navigation without a bridge means page-level
+         * evidence continuity is broken. Never leave the session
+         * reporting "running" while the destination document is
+         * uninstrumented.
+         *
+         * Subframe failures remain degraded diagnostics because the
+         * authoritative top-frame capture can still be healthy.
+         */
+        if (navigation.isTopFrame) {
+          session.stopRequested = true;
+          session.running = false;
+          session.runState = 'interrupted';
+          session.agentActive = false;
+          session.agentStatusAt = Date.now();
+
+          diagnostic(session, 'capture-continuity-lost', {
+            reason: 'top-frame-injection-unavailable',
+            frameId: details.frameId,
+            documentId: details.documentId || null,
+            url: safeUrl,
+            message
+          });
+
+          if (session.runId) {
+            taskRunner.cancelRun(
+              session.runId,
+              'Capture continuity lost after top-frame navigation.'
+            );
+          }
+
+          await detachDeepMode(
+            details.tabId,
+            session
+          );
+        }
+
         scheduleFlush(details.tabId);
       }
     }
