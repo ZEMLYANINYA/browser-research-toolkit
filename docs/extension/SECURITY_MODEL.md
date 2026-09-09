@@ -131,7 +131,6 @@ should review exports before publication or sharing.
 | `webNavigation` | Observes navigation | Used for browser-controlled hard-navigation provenance. |
 | `debugger` | Powerful CDP access | Used only by optional Deep mode; state/failures are visible in UI. |
 | Optional HTTP(S) host access | Can authorize extension-origin requests to a remote web origin | Declared as optional, requested per origin from an explicit source-UI user gesture, verified again by the service worker before fetch, and recorded in the live session allowlist. |
-| HTTP(S) host access | Broad origin access | Required for research coverage; source network requests are additionally constrained by policy. |
 
 ## Data handling
 

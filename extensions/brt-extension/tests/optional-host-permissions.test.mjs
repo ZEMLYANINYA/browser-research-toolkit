@@ -91,3 +91,28 @@ test('source permission runtime message is validated', () => {
     /typeof message\.granted !== 'boolean'/
   );
 });
+
+test('source evidence UI does not render page-controlled data through innerHTML', () => {
+  const start = panel.indexOf('function renderSources(session)');
+  const end = panel.indexOf('function renderSession(session)', start);
+
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+
+  const renderSources = panel.slice(start, end);
+
+  assert.doesNotMatch(
+    renderSources,
+    /\.innerHTML\s*=/
+  );
+
+  assert.match(
+    renderSources,
+    /textContent\s*=/
+  );
+
+  assert.match(
+    renderSources,
+    /replaceChildren\s*\(/
+  );
+});

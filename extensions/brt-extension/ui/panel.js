@@ -325,73 +325,97 @@ function sourceOriginPattern(value) {
 }
 
 function renderSources(session) {
-  $('sources').innerHTML =
-    (session?.sources || []).map(
-      (source, index) => {
-        const policy =
-          source.fetchPolicy?.decision === 'blocked'
-            ? `blocked: ${source.fetchPolicy.reason || 'policy'}`
-            : source.indexed
-              ? 'indexed'
-              : 'metadata-only';
+  const container = $('sources');
+  const sources = Array.isArray(session?.sources)
+    ? session.sources
+    : [];
 
-        const status =
-          source.status == null
-            ? policy
-            : `${source.status} · ${policy}`;
+  container.replaceChildren();
 
-        const originPattern =
-          sourceOriginPattern(source.url);
+  if (sources.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = 'No source evidence yet.';
+    container.append(empty);
+    return;
+  }
 
-        const canRequestHost =
-          source.fetchPolicy?.decision === 'blocked' &&
-          source.firstParty !== true &&
-          Boolean(originPattern);
+  const fragment = document.createDocumentFragment();
 
-        const permissionAction =
-          canRequestHost
-            ? `<button
-                class="button allowSourceHostBtn"
-                data-source-origin="${escapeHtml(originPattern)}"
-              >Allow host</button>`
-            : '';
+  sources.forEach((source, index) => {
+    const policy =
+      source.fetchPolicy?.decision === 'blocked'
+        ? `blocked: ${source.fetchPolicy.reason || 'policy'}`
+        : source.indexed
+          ? 'indexed'
+          : 'metadata-only';
 
-        return `
-          <div class="item">
-            <button
-              class="recordButton"
-              data-source-index="${index}"
-            >
-              <div class="itemHeader">
-                <span class="itemTitle">
-                  ${escapeHtml(source.label || source.url)}
-                </span>
-                <span class="badge">
-                  ${escapeHtml(
-                    source.classification ||
-                    source.type ||
-                    'source'
-                  )}
-                </span>
-              </div>
+    const status =
+      source.status == null
+        ? policy
+        : `${source.status} · ${policy}`;
 
-              <div class="muted">
-                ${escapeHtml(source.url || '')}
-                · ${escapeHtml(status)}
-                ${
-                  source.contentHash
-                    ? ` · ${escapeHtml(source.contentHash)}`
-                    : ''
-                }
-              </div>
-            </button>
+    const originPattern =
+      sourceOriginPattern(source.url);
 
-            ${permissionAction}
-          </div>
-        `;
-      }
-    ).join('') ||
-    '<div class="muted">No source evidence yet.</div>';
+    const canRequestHost =
+      source.fetchPolicy?.decision === 'blocked' &&
+      source.firstParty !== true &&
+      Boolean(originPattern);
+
+    const item = document.createElement('div');
+    item.className = 'item';
+
+    const recordButton = document.createElement('button');
+    recordButton.className = 'recordButton';
+    recordButton.dataset.sourceIndex = String(index);
+
+    const header = document.createElement('div');
+    header.className = 'itemHeader';
+
+    const title = document.createElement('span');
+    title.className = 'itemTitle';
+    title.textContent = String(source.label || source.url || '');
+
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = String(
+      source.classification ||
+      source.type ||
+      'source'
+    );
+
+    header.append(title, badge);
+
+    const metadata = document.createElement('div');
+    metadata.className = 'muted';
+
+    const metadataParts = [
+      String(source.url || ''),
+      String(status)
+    ];
+
+    if (source.contentHash) {
+      metadataParts.push(String(source.contentHash));
+    }
+
+    metadata.textContent = metadataParts.join(' · ');
+
+    recordButton.append(header, metadata);
+    item.append(recordButton);
+
+    if (canRequestHost) {
+      const permissionButton = document.createElement('button');
+      permissionButton.className = 'button allowSourceHostBtn';
+      permissionButton.dataset.sourceOrigin = originPattern;
+      permissionButton.textContent = 'Allow host';
+      item.append(permissionButton);
+    }
+
+    fragment.append(item);
+  });
+
+  container.append(fragment);
 }
 
 function renderSession(session) {
