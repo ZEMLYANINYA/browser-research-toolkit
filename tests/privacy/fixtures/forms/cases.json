@@ -1,0 +1,14 @@
+[
+  {
+    "id": "form-token-whole-body-redaction",
+    "url": "https://example.test/api/submit",
+    "input": "name=alice&token=SYNTHETIC_TOKEN_001&city=Wroclaw",
+    "expected": "[REDACTED - Contains sensitive data]"
+  },
+  {
+    "id": "form-safe-body-preserved",
+    "url": "https://example.test/api/submit",
+    "input": "name=alice&city=Wroclaw&page=2",
+    "expected": "name=alice&city=Wroclaw&page=2"
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "id": "url-query-token",
+    "input": "https://example.test/api?q=Berlin&token=SYNTHETIC_TOKEN_001&page=2",
+    "expected": "https://example.test/api?q=Berlin&token=%5BREDACTED%5D&page=2"
+  },
+  {
+    "id": "url-query-api-key-case-insensitive",
+    "input": "https://example.test/maps?API_KEY=SYNTHETIC_KEY_002&lang=pl",
+    "expected": "https://example.test/maps?API_KEY=%5BREDACTED%5D&lang=pl"
+  },
+  {
+    "id": "url-multiple-sensitive-query-fields",
+    "input": "https://example.test/callback?auth=SYNTH_AUTH&secret=SYNTH_SECRET&safe=keep",
+    "expected": "https://example.test/callback?auth=%5BREDACTED%5D&secret=%5BREDACTED%5D&safe=keep"
+  },
+  {
+    "id": "url-non-sensitive-near-match",
+    "input": "https://example.test/api?tokenize=keep&keyboard=keep&q=ok",
+    "expected": "https://example.test/api?tokenize=keep&keyboard=keep&q=ok"
+  }
+]

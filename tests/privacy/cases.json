@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 2,
+  "status": "implemented",
+  "contract": "raw -> current parse/normalization path -> current redaction path -> canonical expected output",
+  "groups": [
+    {
+      "name": "urls",
+      "status": "implemented",
+      "coverage": [
+        "sensitive query params",
+        "case-insensitive parameter names",
+        "multiple sensitive parameters",
+        "safe near-matches"
+      ]
+    },
+    {
+      "name": "headers",
+      "status": "implemented",
+      "coverage": [
+        "Authorization",
+        "API key",
+        "session-like names",
+        "current Cookie weakness"
+      ]
+    },
+    {
+      "name": "json-objects",
+      "status": "implemented",
+      "coverage": [
+        "flat sensitive fields",
+        "nested fields",
+        "arrays",
+        "safe-value preservation"
+      ]
+    },
+    {
+      "name": "request-bodies",
+      "status": "implemented",
+      "coverage": [
+        "auth endpoint whole-body redaction",
+        "sensitive whole-string redaction",
+        "safe JSON string preservation",
+        "malformed JSON preservation",
+        "current non-string behavior"
+      ]
+    },
+    {
+      "name": "forms",
+      "status": "implemented"
+    },
+    {
+      "name": "graphql",
+      "status": "implemented"
+    },
+    {
+      "name": "html",
+      "status": "implemented"
+    },
+    {
+      "name": "text",
+      "status": "implemented"
+    },
+    {
+      "name": "unicode",
+      "status": "implemented"
+    },
+    {
+      "name": "encoded",
+      "status": "implemented",
+      "knownWeaknesses": [
+        "percent-encoded sensitive field names are not decoded before detection",
+        "base64-like input is not decoded before detection"
+      ]
+    },
+    {
+      "name": "oversized",
+      "status": "implemented",
+      "coverage": [
+        "500-character body truncation contract"
+      ]
+    },
+    {
+      "name": "duplicates",
+      "status": "implemented",
+      "coverage": [
+        "repeated sensitive fields",
+        "same value under safe field names"
+      ]
+    },
+    {
+      "name": "historical-regressions",
+      "status": "implemented",
+      "coverage": [
+        "Google Maps place-details field-level redaction"
+      ]
+    },
+    {
+      "name": "representative-payloads",
+      "status": "implemented",
+      "coverage": [
+        "synthetic BRT-shaped network response object"
+      ]
+    }
+  ],
+  "knownWeaknesses": [
+    "sanitizeHeaders does not currently apply the cookies pattern",
+    "sanitizeBody does not parse request JSON before redaction",
+    "sanitizeBody redacts whole strings when a sensitive pattern is detected",
+    "sanitizeBody treats non-string request bodies as Binary Data",
+    "sanitizeObject is field-name based and does not detect secret values under safe field names",
+    "encoded sensitive names or values are not decoded before detection"
+  ]
+}

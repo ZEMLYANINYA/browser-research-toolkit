@@ -1,0 +1,14 @@
+[
+  {
+    "id": "text-safe-preserved",
+    "url": "https://example.test/api/text",
+    "input": "status=ok region=eu-central",
+    "expected": "status=ok region=eu-central"
+  },
+  {
+    "id": "text-sensitive-word-whole-body-redaction",
+    "url": "https://example.test/api/text",
+    "input": "authorization: SYNTHETIC_VALUE",
+    "expected": "[REDACTED - Contains sensitive data]"
+  }
+]

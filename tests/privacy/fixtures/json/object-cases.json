@@ -1,0 +1,72 @@
+[
+  {
+    "id": "object-flat-sensitive-key",
+    "input": {
+      "username": "alice",
+      "password": "SYNTHETIC_PASSWORD_001",
+      "theme": "dark"
+    },
+    "expected": {
+      "username": "[REDACTED]",
+      "password": "[REDACTED]",
+      "theme": "dark"
+    }
+  },
+  {
+    "id": "object-nested-sensitive-key",
+    "input": {
+      "profile": {
+        "email": "alice@example.test",
+        "displayName": "Alice"
+      },
+      "metadata": {
+        "token": "SYNTHETIC_TOKEN_002"
+      }
+    },
+    "expected": {
+      "profile": {
+        "email": "[REDACTED]",
+        "displayName": "Alice"
+      },
+      "metadata": {
+        "token": "[REDACTED]"
+      }
+    }
+  },
+  {
+    "id": "object-array-sensitive-keys",
+    "input": [
+      {
+        "id": 1,
+        "apiKey": "SYNTH_KEY_1"
+      },
+      {
+        "id": 2,
+        "session": "SYNTH_SESSION_2"
+      }
+    ],
+    "expected": [
+      {
+        "id": 1,
+        "apiKey": "[REDACTED]"
+      },
+      {
+        "id": 2,
+        "session": "[REDACTED]"
+      }
+    ]
+  },
+  {
+    "id": "object-safe-values-preserved",
+    "input": {
+      "city": "Wroclaw",
+      "count": 7,
+      "enabled": true
+    },
+    "expected": {
+      "city": "Wroclaw",
+      "count": 7,
+      "enabled": true
+    }
+  }
+]

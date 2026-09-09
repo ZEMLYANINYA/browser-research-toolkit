@@ -1,0 +1,35 @@
+[
+  {
+    "id": "body-auth-endpoint-whole-redaction",
+    "url": "https://example.test/api/login",
+    "input": "{\"user\":\"alice\",\"password\":\"SYNTHETIC_PASSWORD\"}",
+    "expected": "[REDACTED - Auth endpoint]"
+  },
+  {
+    "id": "body-json-string-sensitive-content-whole-redaction",
+    "url": "https://example.test/api/profile",
+    "input": "{\"token\":\"SYNTHETIC_TOKEN_003\",\"safe\":\"keep\"}",
+    "expected": "[REDACTED - Contains sensitive data]"
+  },
+  {
+    "id": "body-json-string-safe-remains-string",
+    "url": "https://example.test/api/profile",
+    "input": "{\"city\":\"Wroclaw\",\"page\":2}",
+    "expected": "{\"city\":\"Wroclaw\",\"page\":2}"
+  },
+  {
+    "id": "body-malformed-json-safe-remains-string",
+    "url": "https://example.test/api/data",
+    "input": "{\"city\":\"Wroclaw\"",
+    "expected": "{\"city\":\"Wroclaw\""
+  },
+  {
+    "id": "body-non-string-current-behavior",
+    "url": "https://example.test/api/data",
+    "input": {
+      "password": "SYNTHETIC_PASSWORD_004"
+    },
+    "expected": "[Binary Data]",
+    "knownWeakness": "sanitizeBody does not structurally sanitize non-string request bodies."
+  }
+]

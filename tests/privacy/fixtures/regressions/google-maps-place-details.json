@@ -1,0 +1,27 @@
+[
+  {
+    "id": "google-maps-place-details-field-level-redaction",
+    "input": {
+      "placeId": "place_123",
+      "name": "Synthetic Cafe",
+      "address": "Example Street 1",
+      "phone": "+48 000 000 000",
+      "rating": 4.7,
+      "geometry": {
+        "lat": 51.1,
+        "lng": 17.0
+      }
+    },
+    "expected": {
+      "placeId": "place_123",
+      "name": "Synthetic Cafe",
+      "address": "Example Street 1",
+      "phone": "[REDACTED]",
+      "rating": 4.7,
+      "geometry": {
+        "lat": 51.1,
+        "lng": 17.0
+      }
+    }
+  }
+]

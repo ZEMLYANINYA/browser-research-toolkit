@@ -1,0 +1,21 @@
+[
+  {
+    "id": "unicode-safe-body-preserved",
+    "url": "https://example.test/api/data",
+    "input": "город=Вроцлав&имя=Алиса",
+    "expected": "город=Вроцлав&имя=Алиса"
+  },
+  {
+    "id": "unicode-object-with-sensitive-english-key",
+    "input": {
+      "город": "Вроцлав",
+      "имя": "Алиса",
+      "token": "SYNTHETIC_TOKEN_003"
+    },
+    "expected": {
+      "город": "Вроцлав",
+      "имя": "Алиса",
+      "token": "[REDACTED]"
+    }
+  }
+]
