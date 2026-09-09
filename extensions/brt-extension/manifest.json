@@ -13,10 +13,6 @@
     "webNavigation",
     "debugger"
   ],
-  "host_permissions": [
-    "http://*/*",
-    "https://*/*"
-  ],
   "background": {
     "service_worker": "src/background.js",
     "type": "module"
@@ -27,5 +23,9 @@
   "side_panel": {
     "default_path": "ui/panel.html"
   },
-  "homepage_url": "https://github.com/ZEMLYANINYA/browser-research-toolkit"
+  "homepage_url": "https://github.com/ZEMLYANINYA/browser-research-toolkit",
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ]
 }

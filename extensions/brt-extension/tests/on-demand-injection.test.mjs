@@ -230,3 +230,27 @@ test('STOP becomes authoritative before awaiting frame teardown', () => {
     'running=false must be visible before STOP delivery awaits'
   );
 });
+
+test('broad web host access is optional rather than mandatory', () => {
+  assert.equal(
+    manifest.host_permissions,
+    undefined
+  );
+
+  assert.deepEqual(
+    manifest.optional_host_permissions,
+    [
+      'http://*/*',
+      'https://*/*'
+    ]
+  );
+
+  assert.ok(
+    manifest.permissions.includes('activeTab')
+  );
+
+  assert.ok(
+    manifest.permissions.includes('scripting')
+  );
+});
+
