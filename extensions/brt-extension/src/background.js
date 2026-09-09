@@ -19,6 +19,7 @@ import { renderParserBlueprintMarkdown } from './parser-blueprint-markdown.js';
 
 const sessions = new Map();
 const cdpTabs = new Set();
+const cdpAttachInFlight = new Map();
 const generationCounters = new Map();
 const sessionLoads = new Map();
 const flushStates = new Map();
@@ -1260,18 +1261,75 @@ function isCurrentLiveCaptureSession(tabId, session) {
 
 async function attachDeepMode(tabId, session) {
   if (cdpTabs.has(tabId)) return true;
-  setCdpState(session, 'attaching');
-  try {
-    if (!chrome.debugger?.attach) { setCdpState(session, 'unavailable'); diagnostic(session, 'cdp-unavailable', { requestedMode: 'deep' }); return false; }
-    await chrome.debugger.attach({ tabId }, '1.3');
-    for (const method of ['Network.enable', 'Debugger.enable', 'Runtime.enable', 'Page.enable']) await chrome.debugger.sendCommand({ tabId }, method);
-    cdpTabs.add(tabId);
-    setCdpState(session, 'attached');
-    diagnostic(session, 'cdp-attached', { domains: ['Network', 'Debugger', 'Runtime', 'Page'] });
-    return true;
-  } catch (error) { setCdpState(session, 'attach-failed'); diagnostic(session, 'cdp-attach-failed', { message: String(error?.message || error) }); return false; }
-}
 
+  const existing = cdpAttachInFlight.get(tabId);
+
+  if (existing) {
+    return existing;
+  }
+
+  const pending = (async () => {
+    setCdpState(session, 'attaching');
+
+    try {
+      if (!chrome.debugger?.attach) {
+        setCdpState(session, 'unavailable');
+        diagnostic(session, 'cdp-unavailable', {
+          requestedMode: 'deep'
+        });
+        return false;
+      }
+
+      await chrome.debugger.attach(
+        { tabId },
+        '1.3'
+      );
+
+      for (const method of [
+        'Network.enable',
+        'Debugger.enable',
+        'Runtime.enable',
+        'Page.enable'
+      ]) {
+        await chrome.debugger.sendCommand(
+          { tabId },
+          method
+        );
+      }
+
+      cdpTabs.add(tabId);
+      setCdpState(session, 'attached');
+
+      diagnostic(session, 'cdp-attached', {
+        domains: [
+          'Network',
+          'Debugger',
+          'Runtime',
+          'Page'
+        ]
+      });
+
+      return true;
+    } catch (error) {
+      setCdpState(session, 'attach-failed');
+
+      diagnostic(session, 'cdp-attach-failed', {
+        message: String(error?.message || error)
+      });
+
+      return false;
+    } finally {
+      cdpAttachInFlight.delete(tabId);
+    }
+  })();
+
+  cdpAttachInFlight.set(
+    tabId,
+    pending
+  );
+
+  return pending;
+}
 async function detachDeepMode(tabId, session) {
   if (!cdpTabs.has(tabId)) {
     setCdpState(session, session.requestedMode === 'deep' ? 'detached' : 'disabled');

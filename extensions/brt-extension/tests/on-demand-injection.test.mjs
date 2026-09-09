@@ -459,3 +459,48 @@ test('bridge-ready watch replay remains top-frame only', () => {
     /if\s*\(frameId\s*===\s*0\)[\s\S]*?'WATCH_ADD'/
   );
 });
+
+test('Deep-mode attachment is serialized per tab', () => {
+  assert.match(
+    background,
+    /const\s+cdpAttachInFlight\s*=\s*new Map\(\)/
+  );
+
+  const attachStart = background.indexOf(
+    'async function attachDeepMode(tabId, session)'
+  );
+
+  assert.ok(attachStart >= 0);
+
+  const attachEnd = background.indexOf(
+    'async function detachDeepMode',
+    attachStart
+  );
+
+  assert.ok(attachEnd > attachStart);
+
+  const block = background.slice(
+    attachStart,
+    attachEnd
+  );
+
+  assert.match(
+    block,
+    /cdpAttachInFlight\.get\(tabId\)/
+  );
+
+  assert.match(
+    block,
+    /cdpAttachInFlight\.set\([\s\S]*?tabId,[\s\S]*?pending/
+  );
+
+  assert.match(
+    block,
+    /cdpAttachInFlight\.delete\(tabId\)/
+  );
+
+  assert.match(
+    block,
+    /return\s+existing/
+  );
+});
