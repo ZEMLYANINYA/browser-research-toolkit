@@ -1129,24 +1129,57 @@ async function activeTab() {
   return tab;
 }
 
-function captureScriptTarget(tabId, frameId = null) {
-  if (Number.isInteger(frameId)) {
-    return { tabId, frameIds: [frameId] };
+function captureScriptTarget(
+  tabId,
+  frameId = null,
+  documentId = null
+) {
+  if (typeof documentId === 'string' && documentId) {
+    return {
+      tabId,
+      documentIds: [documentId]
+    };
   }
 
-  return { tabId, allFrames: true };
+  if (Number.isInteger(frameId)) {
+    return {
+      tabId,
+      frameIds: [frameId]
+    };
+  }
+
+  return {
+    tabId,
+    allFrames: true
+  };
 }
 
-async function injectBridge(tabId, frameId = null) {
+async function injectBridge(
+  tabId,
+  frameId = null,
+  documentId = null
+) {
   await chrome.scripting.executeScript({
-    target: captureScriptTarget(tabId, frameId),
+    target: captureScriptTarget(
+      tabId,
+      frameId,
+      documentId
+    ),
     files: ['src/content-bridge.js']
   });
 }
 
-async function injectAgent(tabId, frameId = null) {
+async function injectAgent(
+  tabId,
+  frameId = null,
+  documentId = null
+) {
   await chrome.scripting.executeScript({
-    target: captureScriptTarget(tabId, frameId),
+    target: captureScriptTarget(
+      tabId,
+      frameId,
+      documentId
+    ),
     files: ['src/page-agent.js'],
     world: 'MAIN'
   });
@@ -1158,12 +1191,15 @@ async function sendCommand(
   command,
   generation = undefined,
   data = undefined,
-  frameId = null
+  frameId = null,
+  documentId = null
 ) {
   const targetOptions =
-    Number.isInteger(frameId)
-      ? { frameId }
-      : commandTargetOptions(command);
+    typeof documentId === 'string' && documentId
+      ? { documentId }
+      : Number.isInteger(frameId)
+        ? { frameId }
+        : commandTargetOptions(command);
 
   try {
     await chrome.tabs.sendMessage(
@@ -1342,6 +1378,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             ? sender.frameId
             : 0;
 
+        const documentId =
+          typeof sender.documentId === 'string'
+            ? sender.documentId
+            : null;
+
         if (!isCurrentLiveCaptureSession(tabId, session)) {
           if (sessions.get(tabId) === session) {
             await sendCommand(
@@ -1349,7 +1390,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               'STOP',
               session.generation,
               undefined,
-              frameId
+              frameId,
+              documentId
             );
           }
 
@@ -1357,7 +1399,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
 
-        await injectAgent(tabId, frameId);
+        await injectAgent(
+          tabId,
+          frameId,
+          documentId
+        );
 
         /*
          * STOP or session replacement may happen while executeScript()
@@ -1371,7 +1417,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               'STOP',
               session.generation,
               undefined,
-              frameId
+              frameId,
+              documentId
             );
           }
 
@@ -1393,7 +1440,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               'STOP',
               session.generation,
               undefined,
-              frameId
+              frameId,
+              documentId
             );
           }
 
@@ -1409,7 +1457,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             mode: session.effectiveMode,
             settings: session.captureSettings
           },
-          frameId
+          frameId,
+          documentId
         );
 
         for (const path of Object.keys(session.watches || {})) {

@@ -50,7 +50,7 @@ test('bridge-ready recovery targets the announcing frame', () => {
 
   assert.match(
     background,
-    /await\s+injectAgent\(tabId,\s*frameId\)/
+    /await\s+injectAgent\(\s*tabId,\s*frameId,\s*documentId\s*\)/
   );
 });
 
@@ -176,11 +176,15 @@ test('bridge-ready rechecks lifecycle after asynchronous agent injection', () =>
     readyEnd
   );
 
-  const injectAt = block.indexOf(
-    'await injectAgent(tabId, frameId)'
+  const injectMatch = block.match(
+    /await\s+injectAgent\(\s*tabId,\s*frameId,\s*documentId\s*\)/
   );
 
-  assert.ok(injectAt >= 0);
+  assert.ok(injectMatch);
+
+  const injectAt = block.indexOf(
+    injectMatch[0]
+  );
 
   const afterInjection = block.slice(injectAt);
 
@@ -297,5 +301,52 @@ test('preserveSession false does not block the initial bridge handshake', () => 
   assert.match(
     background,
     /if \(!session\.running \|\| !session\.preserveSession \|\| session\.importedReadOnly\) return;/
+  );
+});
+
+test('bridge-ready injection is bound to the announcing document', () => {
+  assert.match(
+    background,
+    /const\s+documentId\s*=\s*typeof\s+sender\.documentId\s*===\s*['"]string['"]/
+  );
+
+  assert.match(
+    background,
+    /await\s+injectAgent\(\s*tabId,\s*frameId,\s*documentId\s*\)/
+  );
+
+  assert.match(
+    background,
+    /documentIds:\s*\[documentId\]/
+  );
+});
+
+test('bridge-ready commands are bound to the announcing document', () => {
+  const readyStart = background.indexOf(
+    "if (message?.type === 'BRT_BRIDGE_READY')"
+  );
+
+  assert.ok(readyStart >= 0);
+
+  const readyEnd = background.indexOf(
+    "if (message?.type === 'BRT_GET_ACTIVE_TAB')",
+    readyStart
+  );
+
+  assert.ok(readyEnd > readyStart);
+
+  const block = background.slice(
+    readyStart,
+    readyEnd
+  );
+
+  assert.match(
+    block,
+    /sendCommand\([\s\S]*?'START'[\s\S]*?frameId,\s*documentId/
+  );
+
+  assert.match(
+    block,
+    /sendCommand\([\s\S]*?'STOP'[\s\S]*?frameId,\s*documentId/
   );
 });
