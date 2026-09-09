@@ -210,7 +210,7 @@ The extension currently requests:
 | `webNavigation` | Record browser-controlled hard-navigation provenance. |
 | `debugger` | Optional CDP-assisted Deep mode. |
 | Optional HTTP(S) host access | Declared through `optional_host_permissions`; requested only for a specific source origin after an explicit user action. It is not granted globally at installation time. |
-| `http://*/*`, `https://*/*` | Instrument normal web pages and, subject to BRT policy, collect source evidence. |
+| `http://*/*`, `https://*/*` | Optional host-permission declaration surface only. BRT requests access to a specific source origin from an explicit user action; ordinary capture relies on `activeTab` plus `scripting`. |
 
 `debugger` is powerful and intentionally visible to the user. Deep mode is optional; Light and Standard modes do not require
 an active debugger attachment.
