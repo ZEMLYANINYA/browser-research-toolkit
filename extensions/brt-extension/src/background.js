@@ -1067,10 +1067,6 @@ async function injectAgent(tabId, frameId = null) {
   });
 }
 
-async function injectCaptureScripts(tabId, frameId = null) {
-  await injectBridge(tabId, frameId);
-  await injectAgent(tabId, frameId);
-}
 
 async function sendCommand(
   tabId,
@@ -1283,7 +1279,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       session.antiBot = createAntiBotState(antiBotEnabled);
       session.preserveSession = message.preserveSession !== false;
       sessions.set(tab.id, session);
-      await injectCaptureScripts(tab.id);
+      await injectBridge(tab.id);
       if (session.requestedMode === 'deep') await attachDeepMode(tab.id, session);
       await sendCommand(tab.id, 'START', session.generation, { mode: session.effectiveMode, settings: session.captureSettings });
       scheduleFlush(tab.id);

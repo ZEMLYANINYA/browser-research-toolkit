@@ -1,9 +1,5 @@
 (() => {
   const CHANNEL = '__BRT_LAB_V01__';
-  const AGENT_KEY = '__BRT_LAB_AGENT_V01__';
-  if (window[AGENT_KEY]) {
-    return;
-  }
 
   const LIMITS = {
     maxResponseChars: 80_000,
@@ -1240,10 +1236,22 @@
   }
 
   function stop() {
-    if (!state.active) return;
-    emit('agent-status', { active: false, url: sanitizeUrl(location.href) });
-    restore();
-    state.active = false;
+    if (state.active) {
+      emit('agent-status', {
+        active: false,
+        url: sanitizeUrl(location.href)
+      });
+      restore();
+      state.active = false;
+    }
+
+    window.removeEventListener(
+      'message',
+      onExtensionMessage
+    );
+
+    state.runId = null;
+    state.watches.clear();
   }
 
   function refreshSources() {
@@ -1253,17 +1261,61 @@
     captureRuntimeTopLevel();
   }
 
-  window.addEventListener('message', (event) => {
+  function onExtensionMessage(event) {
     if (event.source !== window) return;
     const msg = event.data;
-    if (!msg || msg.channel !== CHANNEL || msg.direction !== 'EXTENSION_TO_PAGE') return;
-    const cmd = msg.payload?.command;
-    if (cmd === 'START') { if (Number.isInteger(msg.payload?.generation)) state.generation = msg.payload.generation; state.runId = typeof msg.payload?.runId === 'string' ? msg.payload.runId : null; state.captureMode = ['light', 'standard', 'deep'].includes(msg.payload?.mode) ? msg.payload.mode : 'standard'; state.captureSettings = { ...state.captureSettings, ...(msg.payload?.settings || {}) }; start(); }
-    if (cmd === 'STOP' && (!msg.payload?.runId || msg.payload.runId === state.runId)) stop();
-    if (cmd === 'REFRESH_SOURCES') refreshSources();
-    if (cmd === 'WATCH_ADD' && msg.payload?.path) { state.watches.add(msg.payload.path); updateWatch(msg.payload.path); }
-    if (cmd === 'WATCH_SNAPSHOT') state.watches.forEach(updateWatch);
-  });
+    if (
+      !msg ||
+      msg.channel !== CHANNEL ||
+      msg.direction !== 'EXTENSION_TO_PAGE'
+    ) return;
 
-  window[AGENT_KEY] = { start, stop, refreshSources };
+    const cmd = msg.payload?.command;
+
+    if (cmd === 'START') {
+      if (Number.isInteger(msg.payload?.generation)) {
+        state.generation = msg.payload.generation;
+      }
+
+      state.runId =
+        typeof msg.payload?.runId === 'string'
+          ? msg.payload.runId
+          : null;
+
+      state.captureMode =
+        ['light', 'standard', 'deep'].includes(msg.payload?.mode)
+          ? msg.payload.mode
+          : 'standard';
+
+      state.captureSettings = {
+        ...state.captureSettings,
+        ...(msg.payload?.settings || {})
+      };
+
+      start();
+    }
+
+    if (
+      cmd === 'STOP' &&
+      (!msg.payload?.runId || msg.payload.runId === state.runId)
+    ) {
+      stop();
+    }
+
+    if (cmd === 'REFRESH_SOURCES') refreshSources();
+
+    if (cmd === 'WATCH_ADD' && msg.payload?.path) {
+      state.watches.add(msg.payload.path);
+      updateWatch(msg.payload.path);
+    }
+
+    if (cmd === 'WATCH_SNAPSHOT') {
+      state.watches.forEach(updateWatch);
+    }
+  }
+
+  window.addEventListener(
+    'message',
+    onExtensionMessage
+  );
 })();
