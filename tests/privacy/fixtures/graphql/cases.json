@@ -1,0 +1,14 @@
+[
+  {
+    "id": "graphql-sensitive-variable-whole-body-redaction",
+    "url": "https://example.test/graphql",
+    "input": "{\"query\":\"query Viewer { viewer { id } }\",\"variables\":{\"token\":\"SYNTHETIC_TOKEN_002\"}}",
+    "expected": "[REDACTED - Contains sensitive data]"
+  },
+  {
+    "id": "graphql-safe-payload-preserved",
+    "url": "https://example.test/graphql",
+    "input": "{\"query\":\"query Place($id: ID!) { place(id: $id) { name } }\",\"variables\":{\"id\":\"123\"}}",
+    "expected": "{\"query\":\"query Place($id: ID!) { place(id: $id) { name } }\",\"variables\":{\"id\":\"123\"}}"
+  }
+]

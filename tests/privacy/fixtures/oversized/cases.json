@@ -1,0 +1,9 @@
+[
+  {
+    "id": "safe-body-truncated-at-500",
+    "length": 620,
+    "character": "A",
+    "expectedLength": 503,
+    "expectedSuffix": "..."
+  }
+]

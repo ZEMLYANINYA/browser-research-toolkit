@@ -1,0 +1,16 @@
+[
+  {
+    "id": "percent-encoded-token-current-behavior",
+    "url": "https://example.test/api/data",
+    "input": "%74%6f%6b%65%6e=SYNTHETIC_VALUE",
+    "expected": "%74%6f%6b%65%6e=SYNTHETIC_VALUE",
+    "knownWeakness": "sanitizeBody does not decode percent-encoded field names before sensitive-data detection."
+  },
+  {
+    "id": "base64-like-current-behavior",
+    "url": "https://example.test/api/data",
+    "input": "dG9rZW49U1lOVEhFVElDX1RPS0VO",
+    "expected": "dG9rZW49U1lOVEhFVElDX1RPS0VO",
+    "knownWeakness": "Base64-like input is not decoded before sensitive-data detection."
+  }
+]
