@@ -19,6 +19,7 @@ import { renderParserBlueprintMarkdown } from './parser-blueprint-markdown.js';
 
 const sessions = new Map();
 const cdpTabs = new Set();
+const cdpAttachInFlight = new Map();
 const generationCounters = new Map();
 const sessionLoads = new Map();
 const flushStates = new Map();
@@ -108,7 +109,7 @@ function freshSession(tabId) {
     effectiveMode: 'standard',
     cdpState: 'disabled',
     mode: 'standard',
-    captureSettings: { network: true, dom: true, navigation: true, bodies: true, sources: true, thirdPartySources: false, analytics: false, timers: false, mutations: true, performance: true, websocket: true, sse: true, cdp: false, antibot: false },
+    captureSettings: { network: true, dom: true, navigation: true, bodies: true, sources: true, thirdPartySources: false, thirdPartySourceHosts: [], analytics: false, timers: false, mutations: true, performance: true, websocket: true, sse: true, cdp: false, antibot: false },
     analyticsPolicy: 'metadata-only',
     documents: [],
     diagnostics: [],
@@ -712,10 +713,16 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
     const sourceUrl = new URL(rawUrl);
     if (!['http:', 'https:'].includes(sourceUrl.protocol)) throw new Error('source-fetch-rejected: unsupported scheme');
 
+    const thirdPartyHostAllowed =
+      sessionAllowsThirdPartySourceHost(
+        session,
+        sourceUrl.href
+      );
+
     const sourcePolicy = classifySourceFetchPolicy({
       pageUrl: session.pageUrl,
       sourceUrl: sourceUrl.href,
-      allowThirdParty: session.captureSettings?.thirdPartySources === true
+      allowThirdParty: thirdPartyHostAllowed
     });
     if (!sourcePolicy.allowed) {
       const classification = /analytics|telemetry|pixel|collect|gtag|pagead|doubleclick/i.test(shownUrl)
@@ -753,6 +760,85 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
       session.updatedAt = Date.now();
       scheduleFlush(tabId);
       return;
+    }
+
+    if (!sourcePolicy.firstParty) {
+      const originPattern =
+        sourceOriginPattern(sourceUrl.href);
+
+      const hasHostPermission =
+        originPattern
+          ? await chrome.permissions.contains({
+              origins: [originPattern]
+            })
+          : false;
+
+      if (!hasHostPermission) {
+        const classification =
+          /analytics|telemetry|pixel|collect|gtag|pagead|doubleclick/i.test(
+            shownUrl
+          )
+            ? 'analytics'
+            : sourcePolicy.classification;
+
+        const sourceRecord =
+          attachPendingSourceObservations({
+            id: `src_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+            type: 'external-script',
+            url: shownUrl,
+            documentId: sourceFrame.documentId,
+            frameId: sourceFrame.frameId,
+            documentUrl: sourceFrame.documentUrl,
+            label: shownUrl,
+            status: null,
+            text: '',
+            indexed: false,
+            firstParty: false,
+            classification,
+            contentHash: null,
+            truncated: false,
+            bytesRead: 0,
+            staticFindings: [],
+            fetchPolicy: {
+              decision: 'blocked',
+              reason: 'host-permission-required',
+              originPattern
+            }
+          });
+
+        const removed = trackedPush(
+          session,
+          'sources',
+          sourceRecord,
+          LIMITS.maxSources,
+          'source'
+        );
+
+        session.counters.sources =
+          session.sources.length;
+
+        if (removed.length) {
+          diagnostic(
+            session,
+            'source-retention-evicted',
+            { count: removed.length }
+          );
+        }
+
+        diagnostic(
+          session,
+          'source-host-permission-required',
+          {
+            url: shownUrl,
+            originPattern,
+            classification
+          }
+        );
+
+        session.updatedAt = Date.now();
+        scheduleFlush(tabId);
+        return;
+      }
     }
 
     const res = await fetch(sourceUrl.href, { credentials: 'omit', cache: 'force-cache', signal: controller.signal });
@@ -1044,22 +1130,77 @@ async function activeTab() {
   return tab;
 }
 
-async function injectAgent(tabId) {
+function captureScriptTarget(
+  tabId,
+  frameId = null,
+  documentId = null
+) {
+  if (typeof documentId === 'string' && documentId) {
+    return {
+      tabId,
+      documentIds: [documentId]
+    };
+  }
+
+  if (Number.isInteger(frameId)) {
+    return {
+      tabId,
+      frameIds: [frameId]
+    };
+  }
+
+  return {
+    tabId,
+    allFrames: true
+  };
+}
+
+async function injectBridge(
+  tabId,
+  frameId = null,
+  documentId = null
+) {
   await chrome.scripting.executeScript({
-    target: { tabId },
+    target: captureScriptTarget(
+      tabId,
+      frameId,
+      documentId
+    ),
+    files: ['src/content-bridge.js']
+  });
+}
+
+async function injectAgent(
+  tabId,
+  frameId = null,
+  documentId = null
+) {
+  await chrome.scripting.executeScript({
+    target: captureScriptTarget(
+      tabId,
+      frameId,
+      documentId
+    ),
     files: ['src/page-agent.js'],
     world: 'MAIN'
   });
 }
 
+
 async function sendCommand(
   tabId,
   command,
   generation = undefined,
-  data = undefined
+  data = undefined,
+  frameId = null,
+  documentId = null
 ) {
   const targetOptions =
-    commandTargetOptions(command);
+    typeof documentId === 'string' && documentId
+      ? { documentId }
+      : Number.isInteger(frameId)
+        ? { frameId }
+        : commandTargetOptions(command);
 
   try {
     await chrome.tabs.sendMessage(
@@ -1082,20 +1223,113 @@ function sessionGeneration(tabId) {
   return sessions.get(tabId)?.generation;
 }
 
-async function attachDeepMode(tabId, session) {
-  if (cdpTabs.has(tabId)) return true;
-  setCdpState(session, 'attaching');
+function sourceOriginPattern(value) {
   try {
-    if (!chrome.debugger?.attach) { setCdpState(session, 'unavailable'); diagnostic(session, 'cdp-unavailable', { requestedMode: 'deep' }); return false; }
-    await chrome.debugger.attach({ tabId }, '1.3');
-    for (const method of ['Network.enable', 'Debugger.enable', 'Runtime.enable', 'Page.enable']) await chrome.debugger.sendCommand({ tabId }, method);
-    cdpTabs.add(tabId);
-    setCdpState(session, 'attached');
-    diagnostic(session, 'cdp-attached', { domains: ['Network', 'Debugger', 'Runtime', 'Page'] });
-    return true;
-  } catch (error) { setCdpState(session, 'attach-failed'); diagnostic(session, 'cdp-attach-failed', { message: String(error?.message || error) }); return false; }
+    const url = new URL(String(value || ''));
+
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      return null;
+    }
+
+    return `${url.protocol}//${url.host}/*`;
+  } catch {
+    return null;
+  }
 }
 
+function sessionAllowsThirdPartySourceHost(session, sourceUrl) {
+  const pattern = sourceOriginPattern(sourceUrl);
+
+  if (!pattern) return false;
+
+  return Array.isArray(
+    session?.captureSettings?.thirdPartySourceHosts
+  ) &&
+    session.captureSettings.thirdPartySourceHosts.includes(
+      pattern
+    );
+}
+
+function isCurrentLiveCaptureSession(tabId, session) {
+  return (
+    sessions.get(tabId) === session &&
+    session?.running === true &&
+    session?.stopRequested !== true &&
+    session?.importedReadOnly !== true
+  );
+}
+
+async function attachDeepMode(tabId, session) {
+  if (cdpTabs.has(tabId)) return true;
+
+  const existing = cdpAttachInFlight.get(tabId);
+
+  if (existing) {
+    return existing;
+  }
+
+  const pending = (async () => {
+    setCdpState(session, 'attaching');
+
+    try {
+      if (!chrome.debugger?.attach) {
+        setCdpState(session, 'unavailable');
+        diagnostic(session, 'cdp-unavailable', {
+          requestedMode: 'deep'
+        });
+        return false;
+      }
+
+      await chrome.debugger.attach(
+        { tabId },
+        '1.3'
+      );
+
+      for (const method of [
+        'Network.enable',
+        'Debugger.enable',
+        'Runtime.enable',
+        'Page.enable'
+      ]) {
+        await chrome.debugger.sendCommand(
+          { tabId },
+          method
+        );
+      }
+
+      cdpTabs.add(tabId);
+      setCdpState(session, 'attached');
+
+      diagnostic(session, 'cdp-attached', {
+        domains: [
+          'Network',
+          'Debugger',
+          'Runtime',
+          'Page'
+        ]
+      });
+
+      return true;
+    } catch (error) {
+      setCdpState(session, 'attach-failed');
+
+      diagnostic(session, 'cdp-attach-failed', {
+        message: String(error?.message || error)
+      });
+
+      return false;
+    } finally {
+      cdpAttachInFlight.delete(tabId);
+    }
+  })();
+
+  cdpAttachInFlight.set(
+    tabId,
+    pending
+  );
+
+  return pending;
+}
 async function detachDeepMode(tabId, session) {
   if (!cdpTabs.has(tabId)) {
     setCdpState(session, session.requestedMode === 'deep' ? 'detached' : 'disabled');
@@ -1197,13 +1431,109 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tabId = sender.tab?.id;
       if (tabId != null) {
         const session = await loadSession(tabId);
-        if (session.running && session.preserveSession) {
-          await injectAgent(tabId);
-          if (session.requestedMode === 'deep' && !cdpTabs.has(tabId)) await attachDeepMode(tabId, session);
-          await sendCommand(tabId, 'START', session.generation, { mode: session.effectiveMode, settings: session.captureSettings });
-          for (const path of Object.keys(session.watches || {})) await sendCommand(tabId, 'WATCH_ADD', session.generation, { path });
+        const frameId =
+          Number.isInteger(sender.frameId)
+            ? sender.frameId
+            : 0;
+
+        const documentId =
+          typeof sender.documentId === 'string'
+            ? sender.documentId
+            : null;
+
+        if (!isCurrentLiveCaptureSession(tabId, session)) {
+          if (sessions.get(tabId) === session) {
+            await sendCommand(
+              tabId,
+              'STOP',
+              session.generation,
+              undefined,
+              frameId,
+              documentId
+            );
+          }
+
+          sendResponse({ ok: true, ignored: true });
+          return;
+        }
+
+        await injectAgent(
+          tabId,
+          frameId,
+          documentId
+        );
+
+        /*
+         * STOP or session replacement may happen while executeScript()
+         * is in flight. Never START an agent for a session that ceased
+         * to be authoritative during that await.
+         */
+        if (!isCurrentLiveCaptureSession(tabId, session)) {
+          if (sessions.get(tabId) === session) {
+            await sendCommand(
+              tabId,
+              'STOP',
+              session.generation,
+              undefined,
+              frameId,
+              documentId
+            );
+          }
+
+          sendResponse({ ok: true, ignored: true });
+          return;
+        }
+
+        if (
+          session.requestedMode === 'deep' &&
+          !cdpTabs.has(tabId)
+        ) {
+          await attachDeepMode(tabId, session);
+        }
+
+        if (!isCurrentLiveCaptureSession(tabId, session)) {
+          if (sessions.get(tabId) === session) {
+            await sendCommand(
+              tabId,
+              'STOP',
+              session.generation,
+              undefined,
+              frameId,
+              documentId
+            );
+          }
+
+          sendResponse({ ok: true, ignored: true });
+          return;
+        }
+
+        await sendCommand(
+          tabId,
+          'START',
+          session.generation,
+          {
+            mode: session.effectiveMode,
+            settings: session.captureSettings
+          },
+          frameId,
+          documentId
+        );
+
+        if (frameId === 0) {
+          for (const path of Object.keys(session.watches || {})) {
+            if (!isCurrentLiveCaptureSession(tabId, session)) break;
+
+            await sendCommand(
+              tabId,
+              'WATCH_ADD',
+              session.generation,
+              { path },
+              frameId
+            );
+          }
         }
       }
+
       sendResponse({ ok: true });
       return;
     }
@@ -1240,12 +1570,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       setCdpState(session, 'disabled');
       const antiBotEnabled = message.antibot === true;
       session.captureSettings = session.mode === 'light'
-        ? { network: true, dom: true, navigation: true, bodies: false, sources: false, thirdPartySources: false, analytics: false, timers: false, mutations: false, performance: false, websocket: true, sse: true, cdp: false, antibot: antiBotEnabled }
-        : { network: true, dom: true, navigation: true, bodies: true, sources: true, thirdPartySources: false, analytics: false, timers: session.mode === 'deep', mutations: true, performance: true, websocket: true, sse: true, cdp: session.mode === 'deep', antibot: antiBotEnabled };
+        ? { network: true, dom: true, navigation: true, bodies: false, sources: false, thirdPartySources: false, thirdPartySourceHosts: [], analytics: false, timers: false, mutations: false, performance: false, websocket: true, sse: true, cdp: false, antibot: antiBotEnabled }
+        : { network: true, dom: true, navigation: true, bodies: true, sources: true, thirdPartySources: false, thirdPartySourceHosts: [], analytics: false, timers: session.mode === 'deep', mutations: true, performance: true, websocket: true, sse: true, cdp: session.mode === 'deep', antibot: antiBotEnabled };
       session.antiBot = createAntiBotState(antiBotEnabled);
       session.preserveSession = message.preserveSession !== false;
       sessions.set(tab.id, session);
-      await injectAgent(tab.id);
+      await injectBridge(tab.id);
       if (session.requestedMode === 'deep') await attachDeepMode(tab.id, session);
       await sendCommand(tab.id, 'START', session.generation, { mode: session.effectiveMode, settings: session.captureSettings });
       scheduleFlush(tab.id);
@@ -1257,12 +1587,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tab = await activeTab();
       if (tab?.id) {
         const session = await loadSession(tab.id);
+        const wasRunning = session.running === true;
+
+        /*
+         * Make STOP authoritative before sending anything to frames.
+         * Async bridge-ready/navigation work must see a stopped session
+         * while the STOP message itself is still in flight.
+         */
         session.stopRequested = true;
-        session.runState = session.running ? 'stopping' : 'stopped';
-        if (session.runId) taskRunner.cancelRun(session.runId, 'Capture run stopped.');
+        session.running = false;
+        session.runState = wasRunning ? 'stopping' : 'stopped';
+
+        if (session.runId) {
+          taskRunner.cancelRun(
+            session.runId,
+            'Capture run stopped.'
+          );
+        }
+
         const generation = sessionGeneration(tab.id);
         await sendCommand(tab.id, 'STOP', generation);
-        session.running = false;
+
         session.agentActive = false;
         session.agentStatusAt = Date.now();
         session.runState = 'stopped';
@@ -1284,6 +1629,174 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await chrome.storage.local.remove(`brt_session_${tab.id}`);
       }
       sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === 'BRT_SET_SOURCE_HOST_PERMISSION') {
+      const tab = await activeTab();
+
+      if (!tab?.id) {
+        throw new Error(
+          'No active tab for source permission.'
+        );
+      }
+
+      const session = await loadSession(tab.id);
+
+      if (
+        !session.running ||
+        session.importedReadOnly
+      ) {
+        throw new Error(
+          'Source permissions require an active live session.'
+        );
+      }
+
+      const originPattern =
+        sourceOriginPattern(message.originPattern);
+
+      /*
+       * sourceOriginPattern() accepts a URL. The UI sends a Chrome
+       * match pattern ending in /*, so normalize it through a URL
+       * representation first.
+       */
+      let normalizedPattern = null;
+
+      try {
+        const candidate =
+          String(message.originPattern || '');
+
+        const parsed = new URL(
+          candidate.replace(/\/\*$/, '/')
+        );
+
+        if (
+          ['http:', 'https:'].includes(
+            parsed.protocol
+          )
+        ) {
+          normalizedPattern =
+            `${parsed.protocol}//${parsed.host}/*`;
+        }
+      } catch {}
+
+      if (!normalizedPattern) {
+        throw new Error(
+          'Invalid optional source host pattern.'
+        );
+      }
+
+      if (message.granted !== true) {
+        diagnostic(
+          session,
+          'optional-host-permission-denied',
+          { originPattern: normalizedPattern }
+        );
+
+        scheduleFlush(tab.id);
+
+        sendResponse({
+          ok: true,
+          granted: false
+        });
+        return;
+      }
+
+      const actuallyGranted =
+        await chrome.permissions.contains({
+          origins: [normalizedPattern]
+        });
+
+      if (!actuallyGranted) {
+        diagnostic(
+          session,
+          'optional-host-permission-mismatch',
+          { originPattern: normalizedPattern }
+        );
+
+        scheduleFlush(tab.id);
+
+        sendResponse({
+          ok: false,
+          error:
+            'Chrome host permission was not granted.'
+        });
+        return;
+      }
+
+      const hosts =
+        Array.isArray(
+          session.captureSettings
+            ?.thirdPartySourceHosts
+        )
+          ? [
+              ...session.captureSettings
+                .thirdPartySourceHosts
+            ]
+          : [];
+
+      if (!hosts.includes(normalizedPattern)) {
+        hosts.push(normalizedPattern);
+      }
+
+      session.captureSettings.thirdPartySourceHosts =
+        hosts;
+
+      session.captureSettings.thirdPartySources =
+        hosts.length > 0;
+
+      /*
+       * Remove old metadata-only blocked records for this origin.
+       * REFRESH_SOURCES will re-observe them and allow normal indexing.
+       */
+      for (
+        let i = session.sources.length - 1;
+        i >= 0;
+        i -= 1
+      ) {
+        const source = session.sources[i];
+
+        if (
+          source?.fetchPolicy?.decision !==
+            'blocked'
+        ) continue;
+
+        if (
+          sourceOriginPattern(source.url) !==
+            normalizedPattern
+        ) continue;
+
+        removeTrackedAt(
+          session,
+          'sources',
+          i,
+          'source'
+        );
+      }
+
+      session.counters.sources =
+        session.sources.length;
+
+      diagnostic(
+        session,
+        'optional-host-permission-granted',
+        { originPattern: normalizedPattern }
+      );
+
+      scheduleFlush(tab.id);
+
+      await sendCommand(
+        tab.id,
+        'REFRESH_SOURCES',
+        sessionGeneration(tab.id)
+      );
+
+      sendResponse({
+        ok: true,
+        granted: true,
+        originPattern: normalizedPattern
+      });
+
       return;
     }
 
@@ -1479,6 +1992,70 @@ chrome.webNavigation?.onCommitted?.addListener(async details => {
   }
 
   scheduleFlush(details.tabId);
+
+  if (/^https?:/i.test(details.url || '')) {
+    try {
+      await injectBridge(
+        details.tabId,
+        details.frameId,
+        details.documentId || null
+      );
+    } catch (error) {
+      const message = String(error?.message || error);
+
+      const transientFrameRace =
+        /frame with (?:id )?\d+ was removed|no frame with id \d+|no document with id|document with (?:id )?.+ was removed/i.test(
+          message
+        );
+
+      if (!transientFrameRace) {
+        diagnostic(session, 'on-demand-bridge-injection-failed', {
+          frameId: details.frameId,
+          documentId: details.documentId || null,
+          message
+        });
+
+        /*
+         * A top-frame navigation without a bridge means page-level
+         * evidence continuity is broken. Never leave the session
+         * reporting "running" while the destination document is
+         * uninstrumented.
+         *
+         * Subframe failures remain degraded diagnostics because the
+         * authoritative top-frame capture can still be healthy.
+         */
+        if (navigation.isTopFrame) {
+          session.stopRequested = true;
+          session.running = false;
+          session.runState = 'interrupted';
+          session.agentActive = false;
+          session.agentStatusAt = Date.now();
+
+          diagnostic(session, 'capture-continuity-lost', {
+            reason: 'top-frame-injection-unavailable',
+            frameId: details.frameId,
+            documentId: details.documentId || null,
+            url: safeUrl,
+            message
+          });
+
+          if (session.runId) {
+            taskRunner.cancelRun(
+              session.runId,
+              'Capture continuity lost after top-frame navigation.'
+            );
+          }
+
+          await detachDeepMode(
+            details.tabId,
+            session
+          );
+        }
+
+        scheduleFlush(details.tabId);
+      }
+    }
+  }
 });
 
 function sanitizeNavigationUrl(url) {

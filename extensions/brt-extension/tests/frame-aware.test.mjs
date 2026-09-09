@@ -15,16 +15,12 @@ const manifest = JSON.parse(
   )
 );
 
-test('both extension content scripts are enabled in all frames', () => {
-  assert.equal(manifest.content_scripts.length, 2);
-
-  for (const script of manifest.content_scripts) {
-    assert.equal(
-      script.all_frames,
-      true,
-      `${script.js?.[0] || 'content script'} must run in subframes`
-    );
-  }
+test('extension does not declaratively inject capture scripts before START', () => {
+  assert.equal(
+    manifest.content_scripts,
+    undefined,
+    'capture scripts must be injected on demand after explicit START'
+  );
 });
 
 test('subframe document preserves frame provenance', () => {
@@ -715,7 +711,7 @@ test('frame command routing keeps capture tab-wide and watches top-frame only', 
 });
 
 
-test('background applies frame command routing to tabs.sendMessage', () => {
+test('background applies default and explicit frame command routing to tabs.sendMessage', () => {
   const background = fs.readFileSync(
     new URL('../src/background.js', import.meta.url),
     'utf8'
@@ -724,7 +720,7 @@ test('background applies frame command routing to tabs.sendMessage', () => {
   assert.match(
     background,
     /commandTargetOptions/,
-    'background must use commandTargetOptions'
+    'background must preserve default command routing'
   );
 
   const start = background.indexOf(
@@ -747,12 +743,14 @@ test('background applies frame command routing to tabs.sendMessage', () => {
 
   assert.match(
     block,
-    /const\s+targetOptions\s*=\s*commandTargetOptions\s*\(\s*command\s*\)/
+    /Number\.isInteger\(frameId\)[\s\S]*\{\s*frameId\s*\}[\s\S]*commandTargetOptions\(command\)/,
+    'explicit frame routing must override the default command target'
   );
 
   assert.match(
     block,
-    /chrome\.tabs\.sendMessage\s*\(\s*tabId\s*,[\s\S]*targetOptions\s*\)/
+    /chrome\.tabs\.sendMessage\s*\(\s*tabId\s*,[\s\S]*targetOptions\s*\)/,
+    'tabs.sendMessage must receive the resolved target options'
   );
 });
 

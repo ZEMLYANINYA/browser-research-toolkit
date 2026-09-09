@@ -13,10 +13,6 @@
     "webNavigation",
     "debugger"
   ],
-  "host_permissions": [
-    "http://*/*",
-    "https://*/*"
-  ],
   "background": {
     "service_worker": "src/background.js",
     "type": "module"
@@ -27,30 +23,9 @@
   "side_panel": {
     "default_path": "ui/panel.html"
   },
-  "content_scripts": [
-    {
-      "matches": [
-        "http://*/*",
-        "https://*/*"
-      ],
-      "js": [
-        "src/page-agent.js"
-      ],
-      "run_at": "document_start",
-      "world": "MAIN",
-      "all_frames": true
-    },
-    {
-      "matches": [
-        "http://*/*",
-        "https://*/*"
-      ],
-      "js": [
-        "src/content-bridge.js"
-      ],
-      "run_at": "document_start",
-      "all_frames": true
-    }
-  ],
-  "homepage_url": "https://github.com/ZEMLYANINYA/browser-research-toolkit"
+  "homepage_url": "https://github.com/ZEMLYANINYA/browser-research-toolkit",
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ]
 }

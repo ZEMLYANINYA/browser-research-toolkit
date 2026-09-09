@@ -1,5 +1,9 @@
 (() => {
   const CHANNEL = '__BRT_LAB_V01__';
+  const BRIDGE_KEY = '__BRT_ISOLATED_BRIDGE_V01__';
+
+  if (globalThis[BRIDGE_KEY]) return;
+  globalThis[BRIDGE_KEY] = true;
   const ALLOWED_PAGE_EVENT_KINDS = new Set([
     'agent-status', 'antibot-dom-signal', 'connection-lifecycle', 'diagnostic', 'dom-event', 'form-submit',
     'html-snapshot', 'mutation', 'navigation', 'network-body', 'network-error', 'network-request',
@@ -11,9 +15,25 @@
 
   const stopInvalidatedBridge = () => {
     if (!contextAlive) return;
+
     contextAlive = false;
-    window.removeEventListener('message', onPageMessage);
-    try { chrome.runtime.onMessage.removeListener(onExtensionMessage); } catch {}
+
+    window.removeEventListener(
+      'message',
+      onPageMessage
+    );
+
+    try {
+      chrome.runtime.onMessage.removeListener(
+        onExtensionMessage
+      );
+    } catch {}
+
+    try {
+      delete globalThis[BRIDGE_KEY];
+    } catch {
+      globalThis[BRIDGE_KEY] = false;
+    }
   };
 
   const sendRuntimeMessage = (message) => {
@@ -55,12 +75,20 @@
   window.addEventListener('message', onPageMessage);
 
   function onExtensionMessage(message) {
-    if (!message || message.type !== 'BRT_EXTENSION_COMMAND') return;
+    if (
+      !message ||
+      message.type !== 'BRT_EXTENSION_COMMAND'
+    ) return;
+
     window.postMessage({
       channel: CHANNEL,
       direction: 'EXTENSION_TO_PAGE',
       payload: message.payload
     }, '*');
+
+    if (message.payload?.command === 'STOP') {
+      stopInvalidatedBridge();
+    }
   }
   chrome.runtime.onMessage.addListener(onExtensionMessage);
 

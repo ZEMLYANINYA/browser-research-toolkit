@@ -310,12 +310,114 @@ function renderCorrelationGraph(session) {
   $('correlationGraph').innerHTML = `<svg class="graphSvg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Candidate correlation graph"><defs><marker id="graphArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#63758f"></path></marker></defs><line class="graphAxis" x1="70" y1="365" x2="${width-60}" y2="365"></line><text class="graphLaneLabel" x="12" y="99">DOM</text><text class="graphLaneLabel" x="12" y="199">NETWORK</text><text class="graphLaneLabel" x="12" y="299">NAV</text>${ticks}${edges}${nodes}</svg>`;
 }
 
+function sourceOriginPattern(value) {
+  try {
+    const url = new URL(String(value || ''));
+
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      return '';
+    }
+
+    return `${url.protocol}//${url.host}/*`;
+  } catch {
+    return '';
+  }
+}
+
 function renderSources(session) {
-  $('sources').innerHTML = (session?.sources || []).map((source,index) => {
-    const policy = source.fetchPolicy?.decision === 'blocked' ? `blocked: ${source.fetchPolicy.reason || 'policy'}` : source.indexed ? 'indexed' : 'metadata-only';
-    const status = source.status == null ? policy : `${source.status} · ${policy}`;
-    return `<button class="recordButton" data-source-index="${index}"><div class="itemHeader"><span class="itemTitle">${escapeHtml(source.label || source.url)}</span><span class="badge">${escapeHtml(source.classification || source.type || 'source')}</span></div><div class="muted">${escapeHtml(source.url || '')} · ${escapeHtml(status)}${source.contentHash ? ` · ${escapeHtml(source.contentHash)}` : ''}</div></button>`;
-  }).join('') || '<div class="muted">No source evidence yet.</div>';
+  const container = $('sources');
+  const sources = Array.isArray(session?.sources)
+    ? session.sources
+    : [];
+
+  container.replaceChildren();
+
+  if (sources.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = 'No source evidence yet.';
+    container.append(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+
+  sources.forEach((source, index) => {
+    const policy =
+      source.fetchPolicy?.decision === 'blocked'
+        ? `blocked: ${source.fetchPolicy.reason || 'policy'}`
+        : source.indexed
+          ? 'indexed'
+          : 'metadata-only';
+
+    const status =
+      source.status == null
+        ? policy
+        : `${source.status} · ${policy}`;
+
+    const originPattern =
+      sourceOriginPattern(source.url);
+
+    const canRequestHost =
+      session?.running === true &&
+      session?.importedReadOnly !== true &&
+      source.fetchPolicy?.decision === 'blocked' &&
+      source.firstParty !== true &&
+      Boolean(originPattern);
+
+    const item = document.createElement('div');
+    item.className = 'item';
+
+    const recordButton = document.createElement('button');
+    recordButton.className = 'recordButton';
+    recordButton.dataset.sourceIndex = String(index);
+
+    const header = document.createElement('div');
+    header.className = 'itemHeader';
+
+    const title = document.createElement('span');
+    title.className = 'itemTitle';
+    title.textContent = String(source.label || source.url || '');
+
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = String(
+      source.classification ||
+      source.type ||
+      'source'
+    );
+
+    header.append(title, badge);
+
+    const metadata = document.createElement('div');
+    metadata.className = 'muted';
+
+    const metadataParts = [
+      String(source.url || ''),
+      String(status)
+    ];
+
+    if (source.contentHash) {
+      metadataParts.push(String(source.contentHash));
+    }
+
+    metadata.textContent = metadataParts.join(' · ');
+
+    recordButton.append(header, metadata);
+    item.append(recordButton);
+
+    if (canRequestHost) {
+      const permissionButton = document.createElement('button');
+      permissionButton.className = 'button allowSourceHostBtn';
+      permissionButton.dataset.sourceOrigin = originPattern;
+      permissionButton.textContent = 'Allow host';
+      item.append(permissionButton);
+    }
+
+    fragment.append(item);
+  });
+
+  container.append(fragment);
 }
 
 function renderSession(session) {
@@ -565,6 +667,67 @@ function openTab(name) {
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active')); document.querySelectorAll('.tabPane').forEach(x => x.classList.remove('active'));
   tab.classList.add('active'); $(`tab-${name}`).classList.add('active');
 }
+
+$('sources').addEventListener(
+  'click',
+  async event => {
+    const permissionButton =
+      event.target.closest(
+        '.allowSourceHostBtn'
+      );
+
+    if (!permissionButton) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const originPattern =
+      permissionButton.dataset.sourceOrigin;
+
+    if (!originPattern) return;
+
+    /*
+     * Never expand persistent Chrome host access from a stale,
+     * stopped, or imported read-only session view.
+     */
+    if (
+      currentSession?.running !== true ||
+      currentSession?.importedReadOnly === true
+    ) {
+      await refresh();
+      return;
+    }
+
+    permissionButton.disabled = true;
+
+    try {
+      /*
+       * Keep permissions.request() directly in the click handler.
+       * This is an explicit user gesture, not an automatic page event.
+       */
+      const granted =
+        await chrome.permissions.request({
+          origins: [originPattern]
+        });
+
+      await call({
+        type:
+          'BRT_SET_SOURCE_HOST_PERMISSION',
+        originPattern,
+        granted
+      });
+
+      await refresh();
+    } catch (error) {
+      $('pageInfo').textContent =
+        `Source permission failed: ${
+          error?.message || error
+        }`;
+    } finally {
+      permissionButton.disabled = false;
+    }
+  }
+);
 
 $('startBtn').addEventListener('click', async () => { await call({ type:'BRT_START', mode:$('captureMode').value, antibot:$('antiBotToggle').checked, preserveSession:true }); await refresh(); });
 $('stopBtn').addEventListener('click', async () => { await call({ type:'BRT_STOP' }); await refresh(); });

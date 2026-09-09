@@ -147,7 +147,9 @@ The extension uses a fail-closed external-source policy:
 - A script on the **same hostname** as the captured page may be fetched and indexed.
 - A script on another hostname is **not fetched by default**.
 - A blocked third-party script is retained as metadata-only source evidence with a policy reason.
-- Third-party source fetching requires the explicit `thirdPartySources` opt-in in capture settings.
+- Third-party source bodies are not fetched by default. Access is granted explicitly per origin through a user-triggered optional host-permission request.
+- Granting one third-party source origin does not authorize other origins. The current session retains the approved origin patterns in `thirdPartySourceHosts`.
+- Denying an optional host-permission request leaves capture running and retains the source as metadata-only evidence with an explicit diagnostic.
 - Unsupported schemes and invalid source/page URLs are rejected.
 - Source downloads are timeout-bound, rate-limited, byte-bounded, character-bounded, and redacted before storage.
 - Source records retain document/frame observations even when the same external URL is deduplicated across multiple frames.
@@ -199,15 +201,16 @@ The extension currently requests:
 
 | Permission | Why it is used |
 | --- | --- |
-| `activeTab` | Work with the current research tab. |
-| `scripting` | Inject/ensure the MAIN-world research agent. |
+| `activeTab` | Temporary access to the user-selected research tab instead of permanent access to every web origin. |
+| `scripting` | Inject the isolated bridge and MAIN-world research agent on demand after the user starts capture. |
 | `sidePanel` | Provide the research dashboard. |
 | `tabs` | Resolve the active tab and lifecycle. |
 | `storage` | Persist local sessions. |
 | `unlimitedStorage` | Allow larger bounded research sessions without a small extension quota becoming the primary limit. |
 | `webNavigation` | Record browser-controlled hard-navigation provenance. |
 | `debugger` | Optional CDP-assisted Deep mode. |
-| `http://*/*`, `https://*/*` | Instrument normal web pages and, subject to BRT policy, collect source evidence. |
+| Optional HTTP(S) host access | Declared through `optional_host_permissions`; requested only for a specific source origin after an explicit user action. It is not granted globally at installation time. |
+| `http://*/*`, `https://*/*` | Optional host-permission declaration surface only. BRT requests access to a specific source origin from an explicit user action; ordinary capture relies on `activeTab` plus `scripting`. |
 
 `debugger` is powerful and intentionally visible to the user. Deep mode is optional; Light and Standard modes do not require
 an active debugger attachment.
