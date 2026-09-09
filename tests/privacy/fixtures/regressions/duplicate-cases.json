@@ -1,0 +1,33 @@
+[
+  {
+    "id": "repeated-sensitive-fields-redacted-independently",
+    "input": [
+      {
+        "token": "SYNTHETIC_TOKEN"
+      },
+      {
+        "token": "SYNTHETIC_TOKEN"
+      }
+    ],
+    "expected": [
+      {
+        "token": "[REDACTED]"
+      },
+      {
+        "token": "[REDACTED]"
+      }
+    ]
+  },
+  {
+    "id": "same-sensitive-looking-value-under-safe-keys-preserved",
+    "input": {
+      "first": "SYNTHETIC_TOKEN",
+      "second": "SYNTHETIC_TOKEN"
+    },
+    "expected": {
+      "first": "SYNTHETIC_TOKEN",
+      "second": "SYNTHETIC_TOKEN"
+    },
+    "knownWeakness": "sanitizeObject redacts by field name, not by sensitive-looking value."
+  }
+]

@@ -1,51 +1,65 @@
 # BRT Privacy Regression Harness
 
-Status: v0.6 Step 2
+Status: v0.6 Step 2 implementation complete
 
-Purpose:
+## Purpose
 
-Freeze the current privacy/redaction behavior before shared security
-primitives are moved into the v0.6 Shared Core.
+Freeze the current privacy/redaction behavior before security primitives are
+moved into the v0.6 Shared Core.
 
-The harness is regression protection, not a sanitizer redesign.
+This harness is regression protection, not a sanitizer redesign.
 
-Contract:
+## Contract
 
-raw fixture
-  -> current parser / normalizer path
+raw input
+  -> current parser / normalization path
   -> current redaction path
-  -> canonical output
+  -> canonical expected output
   -> golden comparison
 
-Rules:
+## Coverage
 
-1. Production sanitizer behavior must not be changed merely to make a fixture pass.
-2. Current weaknesses are recorded explicitly instead of silently corrected.
-3. Secrets in fixtures are synthetic only.
-4. Expected outputs are reviewed and committed.
-5. Malformed inputs must not cause the harness to invent structure.
-6. Destructive redaction is a regression just like missed redaction.
-7. Ordering and formatting differences are canonicalized only when semantically irrelevant.
-8. Representative historical regressions belong under fixtures/regressions.
-9. Step 2 must be green before Step 3 moves sanitizer/security primitives.
-10. New privacy behavior requires an explicit later decision, not an accidental golden update.
+The corpus currently covers:
 
-Initial corpus:
-
-- URL/query secrets
-- Authorization and API-key headers
-- cookies
-- JSON objects
-- nested JSON
+- URL/query secret redaction
+- Authorization/API-key/session-like headers
+- current Cookie-header behavior
+- flat and nested JSON objects
 - arrays
-- malformed JSON
+- malformed JSON request bodies
 - form-urlencoded bodies
 - GraphQL payloads
-- HTML
-- plain text
-- oversized payloads
+- HTML and plain text
 - Unicode
-- percent/base64-like encoded values
-- duplicate keys/values
-- Google Maps/place-details style regressions
-- representative prior BRT payload shapes
+- percent-encoded and base64-like input
+- oversized body truncation
+- duplicate/repeated sensitive structures
+- Google Maps place-details historical regression
+- representative BRT-shaped payloads
+
+## Known current weaknesses
+
+These are intentionally recorded rather than silently fixed in Step 2:
+
+- `sanitizeHeaders` currently does not apply the cookie-pattern matcher.
+- request-body sanitization does not parse JSON before redaction.
+- sensitive request-body strings may be redacted as a whole.
+- non-string request bodies are represented as `[Binary Data]`.
+- structured object redaction is field-name based, not value based.
+- percent-encoded and base64-like sensitive names/values are not decoded first.
+
+A future behavior change must update the implementation and the corresponding
+golden expectation deliberately.
+
+## Rules
+
+1. Production sanitizer behavior must not be changed merely to make a fixture pass.
+2. Secrets in fixtures are synthetic only.
+3. Expected outputs are reviewed and committed.
+4. Malformed inputs must not cause invented structure.
+5. Destructive over-redaction is a regression just like missed redaction.
+6. Canonicalization may remove irrelevant formatting differences only.
+7. Historical regressions remain permanently represented.
+8. Step 2 must remain green during Step 3 Shared Core work.
+9. Golden updates must be explicit and reviewable.
+10. Evidence loss or privacy weakening must never be hidden behind fixture rewrites.

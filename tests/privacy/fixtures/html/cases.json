@@ -1,0 +1,14 @@
+[
+  {
+    "id": "html-safe-text-preserved",
+    "url": "https://example.test/api/html",
+    "input": "<div><span>Public content</span></div>",
+    "expected": "<div><span>Public content</span></div>"
+  },
+  {
+    "id": "html-sensitive-word-whole-body-redaction",
+    "url": "https://example.test/api/html",
+    "input": "<div data-token=\"SYNTHETIC_TOKEN_001\">Public content</div>",
+    "expected": "[REDACTED - Contains sensitive data]"
+  }
+]

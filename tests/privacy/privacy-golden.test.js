@@ -33,6 +33,12 @@ const unicodeCases = readJson('fixtures/unicode/cases.json');
 const oversizedCases = readJson('fixtures/oversized/cases.json');
 const regressionCases =
   readJson('fixtures/regressions/google-maps-place-details.json');
+const htmlCases = readJson('fixtures/html/cases.json');
+const textCases = readJson('fixtures/text/cases.json');
+const duplicateCases =
+  readJson('fixtures/regressions/duplicate-cases.json');
+const representativeCases =
+  readJson('fixtures/regressions/representative-payloads.json');
 
 for (const fixture of urlCases) {
   test(`privacy golden URL: ${fixture.id}`, () => {
@@ -141,6 +147,50 @@ for (const fixture of oversizedCases) {
 
 for (const fixture of regressionCases) {
   test(`privacy regression: ${fixture.id}`, () => {
+    const sanitizer = makeSanitizer();
+
+    assert.deepEqual(
+      sanitizer.sanitizeObject(fixture.input),
+      fixture.expected
+    );
+  });
+}
+
+for (const fixture of htmlCases) {
+  test(`privacy golden HTML: ${fixture.id}`, () => {
+    const sanitizer = makeSanitizer();
+
+    assert.equal(
+      sanitizer.sanitizeBody(fixture.input, fixture.url),
+      fixture.expected
+    );
+  });
+}
+
+for (const fixture of textCases) {
+  test(`privacy golden text: ${fixture.id}`, () => {
+    const sanitizer = makeSanitizer();
+
+    assert.equal(
+      sanitizer.sanitizeBody(fixture.input, fixture.url),
+      fixture.expected
+    );
+  });
+}
+
+for (const fixture of duplicateCases) {
+  test(`privacy regression duplicates: ${fixture.id}`, () => {
+    const sanitizer = makeSanitizer();
+
+    assert.deepEqual(
+      sanitizer.sanitizeObject(fixture.input),
+      fixture.expected
+    );
+  });
+}
+
+for (const fixture of representativeCases) {
+  test(`privacy representative payload: ${fixture.id}`, () => {
     const sanitizer = makeSanitizer();
 
     assert.deepEqual(

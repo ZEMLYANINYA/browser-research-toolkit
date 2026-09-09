@@ -1,0 +1,39 @@
+[
+  {
+    "id": "representative-network-response-shape",
+    "input": {
+      "type": "fetch",
+      "url": "https://example.test/api/place",
+      "status": 200,
+      "data": {
+        "id": "place_123",
+        "name": "Synthetic Place",
+        "contact": {
+          "phone": "+48 000 000 000",
+          "email": "synthetic@example.test"
+        },
+        "metadata": {
+          "requestId": "req_123",
+          "region": "pl"
+        }
+      }
+    },
+    "expected": {
+      "type": "fetch",
+      "url": "https://example.test/api/place",
+      "status": 200,
+      "data": {
+        "id": "place_123",
+        "name": "Synthetic Place",
+        "contact": {
+          "phone": "[REDACTED]",
+          "email": "[REDACTED]"
+        },
+        "metadata": {
+          "requestId": "req_123",
+          "region": "pl"
+        }
+      }
+    }
+  }
+]
