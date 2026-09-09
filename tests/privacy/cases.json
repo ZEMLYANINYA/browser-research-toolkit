@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "url-query-token",
+      "group": "urls",
+      "status": "planned"
+    },
+    {
+      "id": "url-query-api-key",
+      "group": "urls",
+      "status": "planned"
+    },
+    {
+      "id": "authorization-header",
+      "group": "headers",
+      "status": "planned"
+    },
+    {
+      "id": "cookie-header",
+      "group": "headers",
+      "status": "planned"
+    },
+    {
+      "id": "json-flat-secret",
+      "group": "json",
+      "status": "planned"
+    },
+    {
+      "id": "json-nested-secret",
+      "group": "json",
+      "status": "planned"
+    },
+    {
+      "id": "json-array-secret",
+      "group": "json",
+      "status": "planned"
+    },
+    {
+      "id": "json-malformed",
+      "group": "json",
+      "status": "planned"
+    },
+    {
+      "id": "form-urlencoded-secret",
+      "group": "forms",
+      "status": "planned"
+    },
+    {
+      "id": "graphql-variables-secret",
+      "group": "graphql",
+      "status": "planned"
+    },
+    {
+      "id": "html-secret-like-text",
+      "group": "html",
+      "status": "planned"
+    },
+    {
+      "id": "plain-text-secret-like-text",
+      "group": "text",
+      "status": "planned"
+    },
+    {
+      "id": "unicode-secret-field",
+      "group": "unicode",
+      "status": "planned"
+    },
+    {
+      "id": "percent-encoded-secret",
+      "group": "encoded",
+      "status": "planned"
+    },
+    {
+      "id": "oversized-body",
+      "group": "oversized",
+      "status": "planned"
+    },
+    {
+      "id": "google-maps-place-details",
+      "group": "regressions",
+      "status": "planned"
+    }
+  ]
+}
