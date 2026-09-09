@@ -1044,22 +1044,45 @@ async function activeTab() {
   return tab;
 }
 
-async function injectAgent(tabId) {
+function captureScriptTarget(tabId, frameId = null) {
+  if (Number.isInteger(frameId)) {
+    return { tabId, frameIds: [frameId] };
+  }
+
+  return { tabId, allFrames: true };
+}
+
+async function injectBridge(tabId, frameId = null) {
   await chrome.scripting.executeScript({
-    target: { tabId },
+    target: captureScriptTarget(tabId, frameId),
+    files: ['src/content-bridge.js']
+  });
+}
+
+async function injectAgent(tabId, frameId = null) {
+  await chrome.scripting.executeScript({
+    target: captureScriptTarget(tabId, frameId),
     files: ['src/page-agent.js'],
     world: 'MAIN'
   });
+}
+
+async function injectCaptureScripts(tabId, frameId = null) {
+  await injectBridge(tabId, frameId);
+  await injectAgent(tabId, frameId);
 }
 
 async function sendCommand(
   tabId,
   command,
   generation = undefined,
-  data = undefined
+  data = undefined,
+  frameId = null
 ) {
   const targetOptions =
-    commandTargetOptions(command);
+    Number.isInteger(frameId)
+      ? { frameId }
+      : commandTargetOptions(command);
 
   try {
     await chrome.tabs.sendMessage(
@@ -1198,10 +1221,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (tabId != null) {
         const session = await loadSession(tabId);
         if (session.running && session.preserveSession) {
-          await injectAgent(tabId);
+          const frameId = Number.isInteger(sender.frameId) ? sender.frameId : 0;
+          await injectAgent(tabId, frameId);
           if (session.requestedMode === 'deep' && !cdpTabs.has(tabId)) await attachDeepMode(tabId, session);
-          await sendCommand(tabId, 'START', session.generation, { mode: session.effectiveMode, settings: session.captureSettings });
-          for (const path of Object.keys(session.watches || {})) await sendCommand(tabId, 'WATCH_ADD', session.generation, { path });
+          await sendCommand(
+            tabId,
+            'START',
+            session.generation,
+            { mode: session.effectiveMode, settings: session.captureSettings },
+            frameId
+          );
+          for (const path of Object.keys(session.watches || {})) {
+            await sendCommand(
+              tabId,
+              'WATCH_ADD',
+              session.generation,
+              { path },
+              frameId
+            );
+          }
         }
       }
       sendResponse({ ok: true });
@@ -1245,7 +1283,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       session.antiBot = createAntiBotState(antiBotEnabled);
       session.preserveSession = message.preserveSession !== false;
       sessions.set(tab.id, session);
-      await injectAgent(tab.id);
+      await injectCaptureScripts(tab.id);
       if (session.requestedMode === 'deep') await attachDeepMode(tab.id, session);
       await sendCommand(tab.id, 'START', session.generation, { mode: session.effectiveMode, settings: session.captureSettings });
       scheduleFlush(tab.id);
@@ -1479,6 +1517,27 @@ chrome.webNavigation?.onCommitted?.addListener(async details => {
   }
 
   scheduleFlush(details.tabId);
+
+  if (/^https?:/i.test(details.url || '')) {
+    try {
+      await injectBridge(details.tabId, details.frameId);
+    } catch (error) {
+      const message = String(error?.message || error);
+      const transientFrameRace =
+        /frame with (?:id )?\d+ was removed|no frame with id \d+/i.test(
+          message
+        );
+
+      if (!transientFrameRace) {
+        diagnostic(session, 'on-demand-bridge-injection-failed', {
+          frameId: details.frameId,
+          documentId: details.documentId || null,
+          message
+        });
+        scheduleFlush(details.tabId);
+      }
+    }
+  }
 });
 
 function sanitizeNavigationUrl(url) {
