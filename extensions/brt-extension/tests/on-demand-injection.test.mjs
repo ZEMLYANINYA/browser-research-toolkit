@@ -254,3 +254,48 @@ test('broad web host access is optional rather than mandatory', () => {
   );
 });
 
+
+test('preserveSession false does not block the initial bridge handshake', () => {
+  const helperStart = background.indexOf(
+    'function isCurrentLiveCaptureSession(tabId, session)'
+  );
+
+  assert.ok(helperStart >= 0);
+
+  const helperEnd = background.indexOf(
+    'async function attachDeepMode',
+    helperStart
+  );
+
+  assert.ok(helperEnd > helperStart);
+
+  const helper = background.slice(
+    helperStart,
+    helperEnd
+  );
+
+  assert.doesNotMatch(
+    helper,
+    /preserveSession/
+  );
+
+  assert.match(
+    helper,
+    /session\?\.running === true/
+  );
+
+  assert.match(
+    helper,
+    /session\?\.stopRequested !== true/
+  );
+
+  assert.match(
+    helper,
+    /session\?\.importedReadOnly !== true/
+  );
+
+  assert.match(
+    background,
+    /if \(!session\.running \|\| !session\.preserveSession \|\| session\.importedReadOnly\) return;/
+  );
+});

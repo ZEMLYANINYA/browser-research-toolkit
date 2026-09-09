@@ -1218,7 +1218,6 @@ function isCurrentLiveCaptureSession(tabId, session) {
     sessions.get(tabId) === session &&
     session?.running === true &&
     session?.stopRequested !== true &&
-    session?.preserveSession === true &&
     session?.importedReadOnly !== true
   );
 }
