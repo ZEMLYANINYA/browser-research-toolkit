@@ -116,3 +116,20 @@ test('source evidence UI does not render page-controlled data through innerHTML'
     /replaceChildren\s*\(/
   );
 });
+
+test('first-party source collection relies on current-tab authority without optional host opt-in', () => {
+  assert.match(
+    background,
+    /if\s*\(!sourcePolicy\.firstParty\)/
+  );
+
+  assert.match(
+    background,
+    /chrome\.permissions\.contains/
+  );
+
+  assert.doesNotMatch(
+    background,
+    /sourcePolicy\.firstParty[\s\S]{0,300}host-permission-required/
+  );
+});
