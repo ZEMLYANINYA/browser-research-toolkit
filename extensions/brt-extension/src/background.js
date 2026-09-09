@@ -1461,16 +1461,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           documentId
         );
 
-        for (const path of Object.keys(session.watches || {})) {
-          if (!isCurrentLiveCaptureSession(tabId, session)) break;
+        if (frameId === 0) {
+          for (const path of Object.keys(session.watches || {})) {
+            if (!isCurrentLiveCaptureSession(tabId, session)) break;
 
-          await sendCommand(
-            tabId,
-            'WATCH_ADD',
-            session.generation,
-            { path },
-            frameId
-          );
+            await sendCommand(
+              tabId,
+              'WATCH_ADD',
+              session.generation,
+              { path },
+              frameId
+            );
+          }
         }
       }
 

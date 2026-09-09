@@ -434,3 +434,28 @@ test('subframe reinjection failure does not interrupt the whole session', () => 
     /session\.running\s*=\s*false/
   );
 });
+
+test('bridge-ready watch replay remains top-frame only', () => {
+  const readyStart = background.indexOf(
+    "if (message?.type === 'BRT_BRIDGE_READY')"
+  );
+
+  assert.ok(readyStart >= 0);
+
+  const readyEnd = background.indexOf(
+    "if (message?.type === 'BRT_GET_ACTIVE_TAB')",
+    readyStart
+  );
+
+  assert.ok(readyEnd > readyStart);
+
+  const block = background.slice(
+    readyStart,
+    readyEnd
+  );
+
+  assert.match(
+    block,
+    /if\s*\(frameId\s*===\s*0\)[\s\S]*?'WATCH_ADD'/
+  );
+});
