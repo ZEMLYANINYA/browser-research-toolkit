@@ -310,12 +310,88 @@ function renderCorrelationGraph(session) {
   $('correlationGraph').innerHTML = `<svg class="graphSvg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Candidate correlation graph"><defs><marker id="graphArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#63758f"></path></marker></defs><line class="graphAxis" x1="70" y1="365" x2="${width-60}" y2="365"></line><text class="graphLaneLabel" x="12" y="99">DOM</text><text class="graphLaneLabel" x="12" y="199">NETWORK</text><text class="graphLaneLabel" x="12" y="299">NAV</text>${ticks}${edges}${nodes}</svg>`;
 }
 
+function sourceOriginPattern(value) {
+  try {
+    const url = new URL(String(value || ''));
+
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      return '';
+    }
+
+    return `${url.protocol}//${url.host}/*`;
+  } catch {
+    return '';
+  }
+}
+
 function renderSources(session) {
-  $('sources').innerHTML = (session?.sources || []).map((source,index) => {
-    const policy = source.fetchPolicy?.decision === 'blocked' ? `blocked: ${source.fetchPolicy.reason || 'policy'}` : source.indexed ? 'indexed' : 'metadata-only';
-    const status = source.status == null ? policy : `${source.status} · ${policy}`;
-    return `<button class="recordButton" data-source-index="${index}"><div class="itemHeader"><span class="itemTitle">${escapeHtml(source.label || source.url)}</span><span class="badge">${escapeHtml(source.classification || source.type || 'source')}</span></div><div class="muted">${escapeHtml(source.url || '')} · ${escapeHtml(status)}${source.contentHash ? ` · ${escapeHtml(source.contentHash)}` : ''}</div></button>`;
-  }).join('') || '<div class="muted">No source evidence yet.</div>';
+  $('sources').innerHTML =
+    (session?.sources || []).map(
+      (source, index) => {
+        const policy =
+          source.fetchPolicy?.decision === 'blocked'
+            ? `blocked: ${source.fetchPolicy.reason || 'policy'}`
+            : source.indexed
+              ? 'indexed'
+              : 'metadata-only';
+
+        const status =
+          source.status == null
+            ? policy
+            : `${source.status} · ${policy}`;
+
+        const originPattern =
+          sourceOriginPattern(source.url);
+
+        const canRequestHost =
+          source.fetchPolicy?.decision === 'blocked' &&
+          source.firstParty !== true &&
+          Boolean(originPattern);
+
+        const permissionAction =
+          canRequestHost
+            ? `<button
+                class="button allowSourceHostBtn"
+                data-source-origin="${escapeHtml(originPattern)}"
+              >Allow host</button>`
+            : '';
+
+        return `
+          <div class="item">
+            <button
+              class="recordButton"
+              data-source-index="${index}"
+            >
+              <div class="itemHeader">
+                <span class="itemTitle">
+                  ${escapeHtml(source.label || source.url)}
+                </span>
+                <span class="badge">
+                  ${escapeHtml(
+                    source.classification ||
+                    source.type ||
+                    'source'
+                  )}
+                </span>
+              </div>
+
+              <div class="muted">
+                ${escapeHtml(source.url || '')}
+                · ${escapeHtml(status)}
+                ${
+                  source.contentHash
+                    ? ` · ${escapeHtml(source.contentHash)}`
+                    : ''
+                }
+              </div>
+            </button>
+
+            ${permissionAction}
+          </div>
+        `;
+      }
+    ).join('') ||
+    '<div class="muted">No source evidence yet.</div>';
 }
 
 function renderSession(session) {
@@ -565,6 +641,55 @@ function openTab(name) {
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active')); document.querySelectorAll('.tabPane').forEach(x => x.classList.remove('active'));
   tab.classList.add('active'); $(`tab-${name}`).classList.add('active');
 }
+
+$('sources').addEventListener(
+  'click',
+  async event => {
+    const permissionButton =
+      event.target.closest(
+        '.allowSourceHostBtn'
+      );
+
+    if (!permissionButton) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const originPattern =
+      permissionButton.dataset.sourceOrigin;
+
+    if (!originPattern) return;
+
+    permissionButton.disabled = true;
+
+    try {
+      /*
+       * Keep permissions.request() directly in the click handler.
+       * This is an explicit user gesture, not an automatic page event.
+       */
+      const granted =
+        await chrome.permissions.request({
+          origins: [originPattern]
+        });
+
+      await call({
+        type:
+          'BRT_SET_SOURCE_HOST_PERMISSION',
+        originPattern,
+        granted
+      });
+
+      await refresh();
+    } catch (error) {
+      $('pageInfo').textContent =
+        `Source permission failed: ${
+          error?.message || error
+        }`;
+    } finally {
+      permissionButton.disabled = false;
+    }
+  }
+);
 
 $('startBtn').addEventListener('click', async () => { await call({ type:'BRT_START', mode:$('captureMode').value, antibot:$('antiBotToggle').checked, preserveSession:true }); await refresh(); });
 $('stopBtn').addEventListener('click', async () => { await call({ type:'BRT_STOP' }); await refresh(); });

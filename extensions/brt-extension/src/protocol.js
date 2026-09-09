@@ -53,6 +53,14 @@ export function validateRuntimeMessage(message) {
   if (message.type === 'BRT_START' && !MODES.includes(message.mode || 'standard')) return { ok: false, error: 'Unsupported capture mode.' };
   if (message.type === 'BRT_WATCH_ADD' && (typeof message.path !== 'string' || !/^window(?:\.[A-Za-z_$][\w$]*)+$/.test(message.path))) return { ok: false, error: 'Invalid watch path.' };
   if (message.type === 'BRT_MARK' && String(message.text || '').length > 200) return { ok: false, error: 'Marker is too long.' };
+  if (message.type === 'BRT_SET_SOURCE_HOST_PERMISSION') {
+    if (typeof message.originPattern !== 'string' || message.originPattern.length > 2048) {
+      return { ok: false, error: 'Invalid source host permission pattern.' };
+    }
+    if (typeof message.granted !== 'boolean') {
+      return { ok: false, error: 'Invalid source host permission result.' };
+    }
+  }
   return { ok: true };
 }
 

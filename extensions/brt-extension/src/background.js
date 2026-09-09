@@ -108,7 +108,7 @@ function freshSession(tabId) {
     effectiveMode: 'standard',
     cdpState: 'disabled',
     mode: 'standard',
-    captureSettings: { network: true, dom: true, navigation: true, bodies: true, sources: true, thirdPartySources: false, analytics: false, timers: false, mutations: true, performance: true, websocket: true, sse: true, cdp: false, antibot: false },
+    captureSettings: { network: true, dom: true, navigation: true, bodies: true, sources: true, thirdPartySources: false, thirdPartySourceHosts: [], analytics: false, timers: false, mutations: true, performance: true, websocket: true, sse: true, cdp: false, antibot: false },
     analyticsPolicy: 'metadata-only',
     documents: [],
     diagnostics: [],
@@ -712,10 +712,16 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
     const sourceUrl = new URL(rawUrl);
     if (!['http:', 'https:'].includes(sourceUrl.protocol)) throw new Error('source-fetch-rejected: unsupported scheme');
 
+    const thirdPartyHostAllowed =
+      sessionAllowsThirdPartySourceHost(
+        session,
+        sourceUrl.href
+      );
+
     const sourcePolicy = classifySourceFetchPolicy({
       pageUrl: session.pageUrl,
       sourceUrl: sourceUrl.href,
-      allowThirdParty: session.captureSettings?.thirdPartySources === true
+      allowThirdParty: thirdPartyHostAllowed
     });
     if (!sourcePolicy.allowed) {
       const classification = /analytics|telemetry|pixel|collect|gtag|pagead|doubleclick/i.test(shownUrl)
@@ -753,6 +759,85 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
       session.updatedAt = Date.now();
       scheduleFlush(tabId);
       return;
+    }
+
+    if (!sourcePolicy.firstParty) {
+      const originPattern =
+        sourceOriginPattern(sourceUrl.href);
+
+      const hasHostPermission =
+        originPattern
+          ? await chrome.permissions.contains({
+              origins: [originPattern]
+            })
+          : false;
+
+      if (!hasHostPermission) {
+        const classification =
+          /analytics|telemetry|pixel|collect|gtag|pagead|doubleclick/i.test(
+            shownUrl
+          )
+            ? 'analytics'
+            : sourcePolicy.classification;
+
+        const sourceRecord =
+          attachPendingSourceObservations({
+            id: `src_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+            type: 'external-script',
+            url: shownUrl,
+            documentId: sourceFrame.documentId,
+            frameId: sourceFrame.frameId,
+            documentUrl: sourceFrame.documentUrl,
+            label: shownUrl,
+            status: null,
+            text: '',
+            indexed: false,
+            firstParty: false,
+            classification,
+            contentHash: null,
+            truncated: false,
+            bytesRead: 0,
+            staticFindings: [],
+            fetchPolicy: {
+              decision: 'blocked',
+              reason: 'host-permission-required',
+              originPattern
+            }
+          });
+
+        const removed = trackedPush(
+          session,
+          'sources',
+          sourceRecord,
+          LIMITS.maxSources,
+          'source'
+        );
+
+        session.counters.sources =
+          session.sources.length;
+
+        if (removed.length) {
+          diagnostic(
+            session,
+            'source-retention-evicted',
+            { count: removed.length }
+          );
+        }
+
+        diagnostic(
+          session,
+          'source-host-permission-required',
+          {
+            url: shownUrl,
+            originPattern,
+            classification
+          }
+        );
+
+        session.updatedAt = Date.now();
+        scheduleFlush(tabId);
+        return;
+      }
     }
 
     const res = await fetch(sourceUrl.href, { credentials: 'omit', cache: 'force-cache', signal: controller.signal });
@@ -1101,6 +1186,33 @@ function sessionGeneration(tabId) {
   return sessions.get(tabId)?.generation;
 }
 
+function sourceOriginPattern(value) {
+  try {
+    const url = new URL(String(value || ''));
+
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      return null;
+    }
+
+    return `${url.protocol}//${url.host}/*`;
+  } catch {
+    return null;
+  }
+}
+
+function sessionAllowsThirdPartySourceHost(session, sourceUrl) {
+  const pattern = sourceOriginPattern(sourceUrl);
+
+  if (!pattern) return false;
+
+  return Array.isArray(
+    session?.captureSettings?.thirdPartySourceHosts
+  ) &&
+    session.captureSettings.thirdPartySourceHosts.includes(
+      pattern
+    );
+}
+
 function isCurrentLiveCaptureSession(tabId, session) {
   return (
     sessions.get(tabId) === session &&
@@ -1350,8 +1462,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       setCdpState(session, 'disabled');
       const antiBotEnabled = message.antibot === true;
       session.captureSettings = session.mode === 'light'
-        ? { network: true, dom: true, navigation: true, bodies: false, sources: false, thirdPartySources: false, analytics: false, timers: false, mutations: false, performance: false, websocket: true, sse: true, cdp: false, antibot: antiBotEnabled }
-        : { network: true, dom: true, navigation: true, bodies: true, sources: true, thirdPartySources: false, analytics: false, timers: session.mode === 'deep', mutations: true, performance: true, websocket: true, sse: true, cdp: session.mode === 'deep', antibot: antiBotEnabled };
+        ? { network: true, dom: true, navigation: true, bodies: false, sources: false, thirdPartySources: false, thirdPartySourceHosts: [], analytics: false, timers: false, mutations: false, performance: false, websocket: true, sse: true, cdp: false, antibot: antiBotEnabled }
+        : { network: true, dom: true, navigation: true, bodies: true, sources: true, thirdPartySources: false, thirdPartySourceHosts: [], analytics: false, timers: session.mode === 'deep', mutations: true, performance: true, websocket: true, sse: true, cdp: session.mode === 'deep', antibot: antiBotEnabled };
       session.antiBot = createAntiBotState(antiBotEnabled);
       session.preserveSession = message.preserveSession !== false;
       sessions.set(tab.id, session);
@@ -1409,6 +1521,174 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await chrome.storage.local.remove(`brt_session_${tab.id}`);
       }
       sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === 'BRT_SET_SOURCE_HOST_PERMISSION') {
+      const tab = await activeTab();
+
+      if (!tab?.id) {
+        throw new Error(
+          'No active tab for source permission.'
+        );
+      }
+
+      const session = await loadSession(tab.id);
+
+      if (
+        !session.running ||
+        session.importedReadOnly
+      ) {
+        throw new Error(
+          'Source permissions require an active live session.'
+        );
+      }
+
+      const originPattern =
+        sourceOriginPattern(message.originPattern);
+
+      /*
+       * sourceOriginPattern() accepts a URL. The UI sends a Chrome
+       * match pattern ending in /*, so normalize it through a URL
+       * representation first.
+       */
+      let normalizedPattern = null;
+
+      try {
+        const candidate =
+          String(message.originPattern || '');
+
+        const parsed = new URL(
+          candidate.replace(/\/\*$/, '/')
+        );
+
+        if (
+          ['http:', 'https:'].includes(
+            parsed.protocol
+          )
+        ) {
+          normalizedPattern =
+            `${parsed.protocol}//${parsed.host}/*`;
+        }
+      } catch {}
+
+      if (!normalizedPattern) {
+        throw new Error(
+          'Invalid optional source host pattern.'
+        );
+      }
+
+      if (message.granted !== true) {
+        diagnostic(
+          session,
+          'optional-host-permission-denied',
+          { originPattern: normalizedPattern }
+        );
+
+        scheduleFlush(tab.id);
+
+        sendResponse({
+          ok: true,
+          granted: false
+        });
+        return;
+      }
+
+      const actuallyGranted =
+        await chrome.permissions.contains({
+          origins: [normalizedPattern]
+        });
+
+      if (!actuallyGranted) {
+        diagnostic(
+          session,
+          'optional-host-permission-mismatch',
+          { originPattern: normalizedPattern }
+        );
+
+        scheduleFlush(tab.id);
+
+        sendResponse({
+          ok: false,
+          error:
+            'Chrome host permission was not granted.'
+        });
+        return;
+      }
+
+      const hosts =
+        Array.isArray(
+          session.captureSettings
+            ?.thirdPartySourceHosts
+        )
+          ? [
+              ...session.captureSettings
+                .thirdPartySourceHosts
+            ]
+          : [];
+
+      if (!hosts.includes(normalizedPattern)) {
+        hosts.push(normalizedPattern);
+      }
+
+      session.captureSettings.thirdPartySourceHosts =
+        hosts;
+
+      session.captureSettings.thirdPartySources =
+        hosts.length > 0;
+
+      /*
+       * Remove old metadata-only blocked records for this origin.
+       * REFRESH_SOURCES will re-observe them and allow normal indexing.
+       */
+      for (
+        let i = session.sources.length - 1;
+        i >= 0;
+        i -= 1
+      ) {
+        const source = session.sources[i];
+
+        if (
+          source?.fetchPolicy?.decision !==
+            'blocked'
+        ) continue;
+
+        if (
+          sourceOriginPattern(source.url) !==
+            normalizedPattern
+        ) continue;
+
+        removeTrackedAt(
+          session,
+          'sources',
+          i,
+          'source'
+        );
+      }
+
+      session.counters.sources =
+        session.sources.length;
+
+      diagnostic(
+        session,
+        'optional-host-permission-granted',
+        { originPattern: normalizedPattern }
+      );
+
+      scheduleFlush(tab.id);
+
+      await sendCommand(
+        tab.id,
+        'REFRESH_SOURCES',
+        sessionGeneration(tab.id)
+      );
+
+      sendResponse({
+        ok: true,
+        granted: true,
+        originPattern: normalizedPattern
+      });
+
       return;
     }
 
