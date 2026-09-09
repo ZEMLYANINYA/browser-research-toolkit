@@ -64,14 +64,19 @@ events. The extension manifest does not expose `externally_connectable`.
 
 ### Boundary C: service worker -> remote web origin
 
-The extension has broad HTTP(S) host permission because it operates on normal web pages and can index source evidence. Broad
-permission does not mean every URL is fetched.
+The extension does not require permanent broad HTTP(S) host access for ordinary capture. Normal page instrumentation uses
+`activeTab` plus `scripting` after an explicit user action.
 
-External-source fetch policy is evaluated **before network I/O**:
+Broad HTTP(S) match patterns are declared only as optional host permissions so that source access can be granted at runtime for a
+specific origin.
 
-- same-hostname source: allowed;
-- third-party source: blocked by default;
-- third-party source with explicit setting: allowed;
+External-source access is evaluated in two separate gates **before network I/O**:
+
+- same-hostname source: allowed by the deterministic source policy and fetched when the current tab authority permits it;
+- third-party source without a session host opt-in: blocked before fetch;
+- third-party source with a session host opt-in but without the corresponding Chrome host permission: blocked before fetch;
+- third-party source with both session opt-in and Chrome host permission: allowed;
+- denial of an optional host permission is retained as an explicit diagnostic and does not stop the research session.
 - invalid/unsupported URL: blocked.
 
 Blocked sources remain visible as metadata-only evidence with the policy reason.
@@ -117,14 +122,15 @@ should review exports before publication or sharing.
 
 | Permission | Security implication | Mitigation / reason |
 | --- | --- | --- |
-| `activeTab` | Access to current tab context | User-driven research workflow. |
-| `scripting` | Can execute extension code in a page | Used only for the local research agent. No remote code loading. |
+| `activeTab` | Temporary access to the current tab context | User-driven research workflow; avoids permanent mandatory access to every web origin. |
+| `scripting` | Can execute extension code in a page | Used for on-demand bridge/agent injection after START. No remote code loading. |
 | `tabs` | Reads tab metadata | Used for session/tab lifecycle. |
 | `sidePanel` | Adds UI surface | Dashboard only. |
 | `storage` | Persists research evidence | Local extension storage; bounded by BRT retention logic. |
 | `unlimitedStorage` | Raises browser quota | BRT still applies its own approximate byte and collection limits. |
 | `webNavigation` | Observes navigation | Used for browser-controlled hard-navigation provenance. |
 | `debugger` | Powerful CDP access | Used only by optional Deep mode; state/failures are visible in UI. |
+| Optional HTTP(S) host access | Can authorize extension-origin requests to a remote web origin | Declared as optional, requested per origin from an explicit source-UI user gesture, verified again by the service worker before fetch, and recorded in the live session allowlist. |
 | HTTP(S) host access | Broad origin access | Required for research coverage; source network requests are additionally constrained by policy. |
 
 ## Data handling

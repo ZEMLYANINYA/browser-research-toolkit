@@ -65,8 +65,9 @@ independent version lines.
 
 ### `manifest.json`
 
-Defines the MV3 service worker, side panel, all-frame MAIN-world page agent, isolated content bridge, required permissions,
-and repository homepage.
+Defines the MV3 service worker, side panel, required permissions, optional HTTP(S) host-permission surface, and repository
+homepage. Capture scripts are not declaratively injected by the manifest; the isolated bridge and MAIN-world agent are injected
+on demand after the user starts capture.
 
 ### `src/page-agent.js`
 
@@ -157,10 +158,25 @@ Pure source-fetch policy used before any external-source network request.
 Current rule:
 
 ```text
-same hostname                           -> allow
-other hostname + thirdPartySources=true -> allow
-other hostname + default settings       -> block before fetch
-invalid/unsupported URL                 -> block
+same hostname
+  -> deterministic policy allows
+  -> current tab authority permits fetch
+
+other hostname + no session host opt-in
+  -> block before fetch
+
+other hostname + session host opt-in
+  -> chrome.permissions.contains(origin)
+       false -> block before fetch + explicit diagnostic
+       true  -> bounded source fetch
+
+user clicks Allow host
+  -> chrome.permissions.request(specific origin)
+       denied  -> capture continues, metadata retained
+       granted -> origin added to current session allowlist
+
+invalid/unsupported URL
+  -> block
 ```
 
 A blocked third-party source is retained as metadata-only evidence. This preserves research context without silently creating
@@ -221,6 +237,8 @@ BRT_START
    +--> runId = new random id
    +--> generation = next generation for tab
    +--> extension runState = running
+   +--> inject isolated bridge into eligible existing frames
+   +--> bridge-ready -> inject MAIN-world agent into that frame
    +--> page agent START command
    +--> optional CDP attach
 ```
@@ -260,8 +278,9 @@ Hard-navigation records from `chrome.webNavigation` are labeled browser-controll
 
 ## Frame-aware capture and ownership
 
-The extension injects its MAIN-world page agent and isolated bridge into eligible frames rather than treating the tab as a
-single execution context.
+After START, the extension injects its isolated bridge into eligible frames rather than treating the tab as a single execution
+context. Each bridge announces readiness, and the service worker injects the MAIN-world page agent into that specific frame only
+while the session is still current and live. Hard navigations repeat this frame-scoped handshake only for an active capture.
 
 Chrome-controlled sender/navigation metadata defines canonical frame provenance:
 
