@@ -134,3 +134,99 @@ test('isolated bridge is idempotent and tears down on STOP', () => {
     /stopInvalidatedBridge\(\)/
   );
 });
+
+test('bridge-ready requires the current live capture session', () => {
+  assert.match(
+    background,
+    /function\s+isCurrentLiveCaptureSession\s*\(tabId,\s*session\)/
+  );
+
+  assert.match(
+    background,
+    /sessions\.get\(tabId\)\s*===\s*session/
+  );
+
+  assert.match(
+    background,
+    /session\?\.stopRequested\s*!==\s*true/
+  );
+
+  assert.match(
+    background,
+    /if\s*\(!isCurrentLiveCaptureSession\(tabId,\s*session\)\)/
+  );
+});
+
+test('bridge-ready rechecks lifecycle after asynchronous agent injection', () => {
+  const readyStart = background.indexOf(
+    "if (message?.type === 'BRT_BRIDGE_READY')"
+  );
+
+  assert.ok(readyStart >= 0);
+
+  const readyEnd = background.indexOf(
+    "if (message?.type === 'BRT_GET_ACTIVE_TAB')",
+    readyStart
+  );
+
+  assert.ok(readyEnd > readyStart);
+
+  const block = background.slice(
+    readyStart,
+    readyEnd
+  );
+
+  const injectAt = block.indexOf(
+    'await injectAgent(tabId, frameId)'
+  );
+
+  assert.ok(injectAt >= 0);
+
+  const afterInjection = block.slice(injectAt);
+
+  assert.match(
+    afterInjection,
+    /isCurrentLiveCaptureSession\(tabId,\s*session\)/
+  );
+
+  assert.match(
+    afterInjection,
+    /sendCommand\([\s\S]*?'STOP'/
+  );
+});
+
+test('STOP becomes authoritative before awaiting frame teardown', () => {
+  const stopStart = background.indexOf(
+    "if (message?.type === 'BRT_STOP')"
+  );
+
+  assert.ok(stopStart >= 0);
+
+  const stopEnd = background.indexOf(
+    "if (message?.type === 'BRT_GET_SESSION')",
+    stopStart
+  );
+
+  assert.ok(stopEnd > stopStart);
+
+  const block = background.slice(
+    stopStart,
+    stopEnd
+  );
+
+  const stoppedAt = block.indexOf(
+    'session.running = false'
+  );
+
+  const sendStopAt = block.indexOf(
+    "await sendCommand(tab.id, 'STOP', generation)"
+  );
+
+  assert.ok(stoppedAt >= 0);
+  assert.ok(sendStopAt >= 0);
+
+  assert.ok(
+    stoppedAt < sendStopAt,
+    'running=false must be visible before STOP delivery awaits'
+  );
+});

@@ -1101,6 +1101,16 @@ function sessionGeneration(tabId) {
   return sessions.get(tabId)?.generation;
 }
 
+function isCurrentLiveCaptureSession(tabId, session) {
+  return (
+    sessions.get(tabId) === session &&
+    session?.running === true &&
+    session?.stopRequested !== true &&
+    session?.preserveSession === true &&
+    session?.importedReadOnly !== true
+  );
+}
+
 async function attachDeepMode(tabId, session) {
   if (cdpTabs.has(tabId)) return true;
   setCdpState(session, 'attaching');
@@ -1216,28 +1226,94 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tabId = sender.tab?.id;
       if (tabId != null) {
         const session = await loadSession(tabId);
-        if (session.running && session.preserveSession) {
-          const frameId = Number.isInteger(sender.frameId) ? sender.frameId : 0;
-          await injectAgent(tabId, frameId);
-          if (session.requestedMode === 'deep' && !cdpTabs.has(tabId)) await attachDeepMode(tabId, session);
-          await sendCommand(
-            tabId,
-            'START',
-            session.generation,
-            { mode: session.effectiveMode, settings: session.captureSettings },
-            frameId
-          );
-          for (const path of Object.keys(session.watches || {})) {
+        const frameId =
+          Number.isInteger(sender.frameId)
+            ? sender.frameId
+            : 0;
+
+        if (!isCurrentLiveCaptureSession(tabId, session)) {
+          if (sessions.get(tabId) === session) {
             await sendCommand(
               tabId,
-              'WATCH_ADD',
+              'STOP',
               session.generation,
-              { path },
+              undefined,
               frameId
             );
           }
+
+          sendResponse({ ok: true, ignored: true });
+          return;
+        }
+
+        await injectAgent(tabId, frameId);
+
+        /*
+         * STOP or session replacement may happen while executeScript()
+         * is in flight. Never START an agent for a session that ceased
+         * to be authoritative during that await.
+         */
+        if (!isCurrentLiveCaptureSession(tabId, session)) {
+          if (sessions.get(tabId) === session) {
+            await sendCommand(
+              tabId,
+              'STOP',
+              session.generation,
+              undefined,
+              frameId
+            );
+          }
+
+          sendResponse({ ok: true, ignored: true });
+          return;
+        }
+
+        if (
+          session.requestedMode === 'deep' &&
+          !cdpTabs.has(tabId)
+        ) {
+          await attachDeepMode(tabId, session);
+        }
+
+        if (!isCurrentLiveCaptureSession(tabId, session)) {
+          if (sessions.get(tabId) === session) {
+            await sendCommand(
+              tabId,
+              'STOP',
+              session.generation,
+              undefined,
+              frameId
+            );
+          }
+
+          sendResponse({ ok: true, ignored: true });
+          return;
+        }
+
+        await sendCommand(
+          tabId,
+          'START',
+          session.generation,
+          {
+            mode: session.effectiveMode,
+            settings: session.captureSettings
+          },
+          frameId
+        );
+
+        for (const path of Object.keys(session.watches || {})) {
+          if (!isCurrentLiveCaptureSession(tabId, session)) break;
+
+          await sendCommand(
+            tabId,
+            'WATCH_ADD',
+            session.generation,
+            { path },
+            frameId
+          );
         }
       }
+
       sendResponse({ ok: true });
       return;
     }
@@ -1291,12 +1367,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tab = await activeTab();
       if (tab?.id) {
         const session = await loadSession(tab.id);
+        const wasRunning = session.running === true;
+
+        /*
+         * Make STOP authoritative before sending anything to frames.
+         * Async bridge-ready/navigation work must see a stopped session
+         * while the STOP message itself is still in flight.
+         */
         session.stopRequested = true;
-        session.runState = session.running ? 'stopping' : 'stopped';
-        if (session.runId) taskRunner.cancelRun(session.runId, 'Capture run stopped.');
+        session.running = false;
+        session.runState = wasRunning ? 'stopping' : 'stopped';
+
+        if (session.runId) {
+          taskRunner.cancelRun(
+            session.runId,
+            'Capture run stopped.'
+          );
+        }
+
         const generation = sessionGeneration(tab.id);
         await sendCommand(tab.id, 'STOP', generation);
-        session.running = false;
+
         session.agentActive = false;
         session.agentStatusAt = Date.now();
         session.runState = 'stopped';
