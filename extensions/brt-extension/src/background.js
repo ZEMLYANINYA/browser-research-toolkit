@@ -18,7 +18,7 @@ import { TaskRunner, TaskError } from './task-runner.js';
 import { generateParserBlueprint } from './parser-blueprint.js';
 import { renderParserBlueprintMarkdown } from './parser-blueprint-markdown.js';
 import { createSessionPersistence } from './session-persistence.js';
-import { createRecordDelta } from './record-delta.js';
+import { createRecordDeltaQueue } from './record-delta-queue.js';
 import { createPersistedRecord } from './session-persistence-model.js';
 
 const sessions = new Map();
@@ -208,7 +208,7 @@ function getSessionRecordDelta(session) {
   if (!state || state.sessionId !== session.sessionId) {
     state = {
       sessionId: session.sessionId,
-      delta: createRecordDelta()
+      delta: createRecordDeltaQueue()
     };
     recordDeltas.set(tabId, state);
   }
