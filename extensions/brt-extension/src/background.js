@@ -1,4 +1,4 @@
-import { LIMITS, trimText, sanitizeUrl } from './shared.js';
+import { LIMITS, trimText, sanitizeUrl, readResponseTextBounded } from './shared.js';
 import {
   ensureStorageStats, rebuildStorageStats, trackedPush, trackedReplace, removeTrackedAt, adjustTrackedBucketBytes,
   pushTimelineTracked, ensureDocument, resolveCanonicalDocumentId, minimalEventEnvelope,
@@ -493,40 +493,6 @@ function timelineLabel(payload) {
 }
 
 
-async function readResponseTextBounded(response, maxBytes) {
-  const reader = response?.body?.getReader?.();
-  if (!reader) return { text: '', bytesRead: 0, truncated: false, unavailable: true };
-  const decoder = new TextDecoder();
-  let bytesRead = 0;
-  let text = '';
-  let truncated = false;
-  try {
-    while (bytesRead < maxBytes) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      const remaining = maxBytes - bytesRead;
-      if (value.byteLength > remaining) {
-        text += decoder.decode(value.subarray(0, remaining), { stream: true });
-        bytesRead += remaining;
-        truncated = true;
-        await reader.cancel('BRT source size cap reached').catch(() => {});
-        break;
-      }
-      text += decoder.decode(value, { stream: true });
-      bytesRead += value.byteLength;
-    }
-    text += decoder.decode();
-    if (bytesRead >= maxBytes && !truncated) {
-      truncated = true;
-      await reader.cancel('BRT source size cap reached').catch(() => {});
-    }
-    return { text, bytesRead, truncated, unavailable: false };
-  } finally {
-    try { reader.releaseLock?.(); } catch {}
-  }
-}
-
 async function sha256Text(text) {
   try {
     const bytes = new TextEncoder().encode(text || '');
@@ -850,7 +816,7 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
       return;
     }
 
-    const bounded = await readResponseTextBounded(res, LIMITS.maxSourceDownloadBytes);
+    const bounded = await readResponseTextBounded(res, LIMITS.maxSourceDownloadBytes, 'BRT source size cap reached');
     const current = sessions.get(tabId);
     if (taskSignal?.aborted) throw new TaskError('TASK_CANCELLED', 'Source indexing cancelled.');
     if (!current || current.sessionId !== capturedSessionId || current.generation !== capturedGeneration || !current.running) return;

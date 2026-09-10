@@ -1,4 +1,6 @@
-import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, redactExtensionSensitiveText, sanitizeUrlWithPolicy, truncateText } from '../dist/shared-text.js';
+import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, readResponseTextBounded, redactExtensionSensitiveText, sanitizeUrlWithPolicy, truncateText } from '../dist/shared-text.js';
+
+export { readResponseTextBounded };
 
 export const CHANNEL = '__BRT_LAB_V01__';
 
