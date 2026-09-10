@@ -71,6 +71,28 @@ test('stale session is rejected before IndexedDB write', () => {
   assert.ok(indexedDb > guard);
 });
 
+test('session export flushes before reading the durable IndexedDB snapshot', () => {
+  const start = background.indexOf("if (message?.type === 'BRT_EXPORT_SESSION') {");
+  const end = background.indexOf("if (message?.type === 'BRT_GET_PARSER_BLUEPRINT') {", start);
+
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+
+  const source = background.slice(start, end);
+  const load = source.indexOf('const session = await loadSession(tab.id);');
+  const identity = source.indexOf('const expectedSessionId = session.sessionId;');
+  const flush = source.indexOf('const flushResult = await flushSessionNow(tab.id);');
+  const durableGuard = source.indexOf('!flushResult?.indexedDbOk');
+  const recovery = source.indexOf('await recoverSessionFromIndexedDb({');
+  const recoveredIdentity = source.indexOf("recovery.session?.sessionId !== expectedSessionId");
+
+  assert.ok(load >= 0);
+  assert.ok(identity > load);
+  assert.ok(flush > identity);
+  assert.ok(durableGuard > flush);
+  assert.ok(recovery > durableGuard);
+  assert.ok(recoveredIdentity > recovery);
+});
 test('bootstrap completion is recorded only for the still-current session', () => {
   const source = flushSessionSource();
 

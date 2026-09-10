@@ -59,6 +59,16 @@ test(
   () => {
     assert.match(
       panelJs,
+      /BRT_EXPORT_SESSION/
+    );
+
+    assert.match(
+      panelJs,
+      /JSON\.stringify\s*\(\s*session\s*,\s*null\s*,\s*2\s*\)/
+    );
+
+    assert.doesNotMatch(
+      panelJs,
       /JSON\.stringify\s*\(\s*currentSession\s*,\s*null\s*,\s*2\s*\)/
     );
 

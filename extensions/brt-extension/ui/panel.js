@@ -656,10 +656,19 @@ async function doSearch() {
   $('searchResults').innerHTML = results.map(r => `<div class="item"><div class="itemHeader"><span class="itemTitle">${escapeHtml(r.label)}</span><span class="badge">${escapeHtml(r.scope)}</span></div>${r.url ? `<div class="muted">${escapeHtml(r.url)}</div>` : ''}<pre class="snippet">${escapeHtml(r.snippet)}</pre></div>`).join('') || '<div class="muted">No matches.</div>';
 }
 
-function exportCurrent() {
-  if (!currentSession) return;
-  const blob = new Blob([JSON.stringify(currentSession,null,2)], { type:'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a');
-  a.href = url; a.download = `brt-session-${new Date().toISOString().replace(/[:.]/g,'-')}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url),1000);
+async function exportCurrent() {
+  const response = await call({ type: 'BRT_EXPORT_SESSION' });
+  const session = response?.session;
+
+  if (!session) return;
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+  downloadArtifact(
+    JSON.stringify(session, null, 2),
+    'application/json',
+    `brt-session-${stamp}.json`
+  );
 }
 
 function openTab(name) {
@@ -733,7 +742,13 @@ $('startBtn').addEventListener('click', async () => { await call({ type:'BRT_STA
 $('stopBtn').addEventListener('click', async () => { await call({ type:'BRT_STOP' }); await refresh(); });
 $('clearBtn').addEventListener('click', async () => { await call({ type:'BRT_CLEAR' }); await refresh(); });
 $('refreshBtn').addEventListener('click', async () => { await call({ type:'BRT_REFRESH_SOURCES' }); setTimeout(refresh,500); });
-$('exportBtn').addEventListener('click', exportCurrent);
+$('exportBtn').addEventListener('click', async () => {
+  try {
+    await exportCurrent();
+  } catch (error) {
+    $('pageInfo').textContent = `Export failed: ${String(error?.message || error)}`;
+  }
+});
 
 $('blueprintRefreshBtn').addEventListener(
   'click',

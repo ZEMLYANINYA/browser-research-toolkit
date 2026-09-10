@@ -2137,6 +2137,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
+    if (message?.type === 'BRT_EXPORT_SESSION') {
+      const tab = await activeTab();
+
+      if (!tab?.id) {
+        sendResponse({ ok: true, session: null });
+        return;
+      }
+
+      const session = await loadSession(tab.id);
+      const expectedSessionId = session.sessionId;
+      const flushResult = await flushSessionNow(tab.id);
+
+      if (!flushResult?.indexedDbOk || flushResult.stale || flushResult.sessionId !== expectedSessionId) {
+        throw new Error('Session export could not establish a durable IndexedDB snapshot.');
+      }
+
+      const recovery = await recoverSessionFromIndexedDb({
+        tabId: tab.id,
+        persistence: indexedDbPersistence
+      });
+
+      if (recovery.status !== 'recovered' || recovery.session?.sessionId !== expectedSessionId) {
+        throw new Error('Session export could not recover the durable IndexedDB snapshot.');
+      }
+
+      sendResponse({ ok: true, session: recovery.session });
+      return;
+    }
+
     if (message?.type === 'BRT_GET_PARSER_BLUEPRINT') {
       const tab = await activeTab();
 
