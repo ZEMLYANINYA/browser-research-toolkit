@@ -1,4 +1,5 @@
 import { truncateText } from '../../../src/shared/text.ts';
+import { sanitizeUrlWithPolicy } from '../../../src/shared/url.ts';
 
 (() => {
   const CHANNEL = '__BRT_LAB_V01__';
@@ -143,28 +144,15 @@ import { truncateText } from '../../../src/shared/text.ts';
 
   const sanitizeUrl = (raw) => {
     if (!raw || typeof raw !== 'string') return raw ?? '';
-    try {
-      const u = new URL(raw, location.href);
-      for (const key of [...u.searchParams.keys()]) {
-        const value = u.searchParams.get(key) || '';
-        if (isSensitiveQueryKey(key)) u.searchParams.set(key, '[REDACTED]');
-        else if (value.length > 256) u.searchParams.set(key, `[TRUNCATED:${value.length}]`);
-      }
-      if (u.hash) {
-        const p = new URLSearchParams(u.hash.slice(1));
-        let changed = false;
-        for (const key of [...p.keys()]) {
-          if (isSensitiveQueryKey(key)) {
-            p.set(key, '[REDACTED]');
-            changed = true;
-          }
-        }
-        u.hash = changed ? p.toString() : '[REDACTED]';
-      }
-      return u.toString();
-    } catch {
-      return '[UNPARSEABLE_URL_REDACTED]';
-    }
+
+    return sanitizeUrlWithPolicy(raw, {
+      isSensitiveQueryKey,
+      baseUrl: location.href,
+      maxQueryValueLength: 256,
+      sanitizeHash: true,
+      redactOpaqueHash: true,
+      malformedResult: '[UNPARSEABLE_URL_REDACTED]'
+    });
   };
 
   const sanitizeObject = (value, depth = 0, seen = new WeakSet()) => {
