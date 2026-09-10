@@ -202,6 +202,36 @@ test('IMPORT settles the previous lifecycle before installing and flushing the i
   assert.equal(immediateFlushes.length, 1);
 });
 
+test('IndexedDB retry uses a separate bounded timer and lifecycle cleanup', () => {
+  assert.match(background, /INDEXEDDB_RETRY_DELAYS_MS = Object\.freeze\(\[250, 1000, 4000\]\)/);
+  assert.match(background, /retryTimer: null/);
+  assert.match(background, /retryAttempts: 0/);
+  assert.match(background, /retrySessionId: null/);
+  assert.match(background, /retryExhaustedNotified: false/);
+  assert.match(background, /bindIndexedDbRetrySession\(state, session\.sessionId\)/);
+  assert.match(background, /indexeddb-retry-exhausted/);
+
+  const settleStart = background.indexOf('async function settleFlushBeforeLifecycle(tabId');
+  const settleEnd = background.indexOf('async function flushSessionNow(tabId)', settleStart);
+  const settleSource = background.slice(settleStart, settleEnd);
+
+  const retryCancels = settleSource.match(/cancelIndexedDbRetry\(state\);/g) || [];
+  assert.ok(retryCancels.length >= 3);
+});
+
+test('tab removal cancels delayed IndexedDB retry before dropping flush state', () => {
+  const start = background.indexOf('chrome.tabs?.onRemoved?.addListener((tabId) => {');
+  assert.notEqual(start, -1);
+
+  const source = background.slice(start);
+  const stateLookup = source.indexOf('const flushState = flushStates.get(tabId);');
+  const cancelRetry = source.indexOf('cancelIndexedDbRetry(flushState);', stateLookup);
+  const deleteState = source.indexOf('flushStates.delete(tabId);', cancelRetry);
+
+  assert.ok(stateLookup >= 0);
+  assert.ok(cancelRetry > stateLookup);
+  assert.ok(deleteState > cancelRetry);
+});
 test('flush suspension blocks direct and scheduled persistence', () => {
   const flushStart = background.indexOf('async function flushSession(tabId) {');
   const flushEnd = background.indexOf('async function settleFlushBeforeLifecycle', flushStart);

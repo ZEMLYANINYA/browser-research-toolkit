@@ -351,12 +351,73 @@ function resetIndexedDbBootstrap(tabId) {
 function getFlushState(tabId) {
   let state = flushStates.get(tabId);
   if (!state) {
-    state = { timer: null, inFlight: false, dirty: false, promise: null, suspended: false };
+    state = {
+      timer: null,
+      retryTimer: null,
+      retryAttempts: 0,
+      retrySessionId: null,
+      retryExhaustedNotified: false,
+      inFlight: false,
+      dirty: false,
+      promise: null,
+      suspended: false
+    };
     flushStates.set(tabId, state);
   }
   return state;
 }
 
+const INDEXEDDB_RETRY_DELAYS_MS = Object.freeze([250, 1000, 4000]);
+
+function cancelIndexedDbRetry(state) {
+  if (state?.retryTimer == null) return;
+  clearTimeout(state.retryTimer);
+  state.retryTimer = null;
+}
+
+function resetIndexedDbRetry(state) {
+  cancelIndexedDbRetry(state);
+  state.retryAttempts = 0;
+  state.retryExhaustedNotified = false;
+}
+
+function bindIndexedDbRetrySession(state, sessionId) {
+  if (state.retrySessionId === sessionId) return;
+
+  resetIndexedDbRetry(state);
+  state.retrySessionId = sessionId;
+}
+
+function scheduleIndexedDbRetry(tabId, session) {
+  const state = getFlushState(tabId);
+
+  bindIndexedDbRetrySession(state, session.sessionId);
+
+  if (state.suspended || state.retryTimer != null || state.dirty) return;
+
+  const attempt = state.retryAttempts;
+  const delay = INDEXEDDB_RETRY_DELAYS_MS[attempt];
+
+  if (!Number.isFinite(delay)) {
+    if (!state.retryExhaustedNotified) {
+      state.retryExhaustedNotified = true;
+      diagnostic(session, 'indexeddb-retry-exhausted', {
+        sessionId: session.sessionId,
+        attempts: state.retryAttempts
+      });
+    }
+    return;
+  }
+
+  state.retryAttempts += 1;
+  state.retryTimer = setTimeout(() => {
+    state.retryTimer = null;
+
+    if (state.suspended || !sessions.has(tabId)) return;
+
+    void flushSession(tabId);
+  }, delay);
+}
 function applyBackpressure(session) {
   const stats = ensureStorageStats(session);
   if (stats.approxBytes <= LIMITS.maxPersistedBytes) return;
@@ -416,6 +477,8 @@ async function flushSession(tabId) {
   const session = sessions.get(tabId);
   if (!session) return;
 
+  bindIndexedDbRetrySession(state, session.sessionId);
+
   state.inFlight = true;
   state.dirty = false;
 
@@ -446,6 +509,8 @@ async function flushSession(tabId) {
           bootstrap
         });
 
+        resetIndexedDbRetry(state);
+
         if (bootstrap && sessions.get(tabId)?.sessionId === session.sessionId) markIndexedDbBootstrapped(session);
       } catch (error) {
         indexedDbOk = false;
@@ -467,6 +532,8 @@ async function flushSession(tabId) {
           message,
           sessionId: session.sessionId
         });
+
+        scheduleIndexedDbRetry(tabId, session);
       }
 
       return {
@@ -502,19 +569,22 @@ async function settleFlushBeforeLifecycle(tabId, { flushDirty = false } = {}) {
   };
 
   cancelTimer();
+  cancelIndexedDbRetry(state);
 
   const pending = state.promise;
   if (pending) {
     await pending;
   }
 
-  // The completed flush may have scheduled a dirty tail.
+  // The completed flush may have scheduled a dirty tail or retry.
   cancelTimer();
+  cancelIndexedDbRetry(state);
 
   while (flushDirty && state.dirty && sessions.has(tabId)) {
     state.dirty = false;
     await flushSession(tabId);
     cancelTimer();
+    cancelIndexedDbRetry(state);
   }
 
   state.dirty = false;
@@ -524,6 +594,8 @@ async function flushSessionNow(tabId) {
   const state = getFlushState(tabId);
 
   if (state.suspended) return;
+
+  cancelIndexedDbRetry(state);
 
   let result = null;
 
@@ -563,6 +635,7 @@ function suspendSessionFlush(tabId) {
     state.timer = null;
   }
 
+  cancelIndexedDbRetry(state);
   state.dirty = false;
   state.suspended = true;
 }
@@ -580,6 +653,7 @@ async function settleAndSuspendSessionFlush(tabId) {
 function scheduleFlush(tabId, delay = 350) {
   const state = getFlushState(tabId);
   if (state.suspended) return;
+  cancelIndexedDbRetry(state);
   state.dirty = true;
   if (state.timer) clearTimeout(state.timer);
   state.timer = setTimeout(() => {
@@ -2414,6 +2488,7 @@ chrome.tabs?.onRemoved?.addListener((tabId) => {
   for (const key of pendingSourceTasks.keys()) if (key.startsWith(`${tabId}:`)) pendingSourceTasks.delete(key);
   const flushState = flushStates.get(tabId);
   if (flushState?.timer) clearTimeout(flushState.timer);
+  cancelIndexedDbRetry(flushState);
   flushStates.delete(tabId);
   sessionLoads.delete(tabId);
   cdpTabs.delete(tabId);
