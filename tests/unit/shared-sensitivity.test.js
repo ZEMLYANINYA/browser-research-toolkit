@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isExtensionSensitiveFieldName,
-  isExtensionSensitiveQueryKey
+  isExtensionSensitiveQueryKey,
+  redactExtensionSensitiveText
 } from '../../dist/shared/sensitivity.js';
 
 test('extension sensitive-field classifier recognizes current protected field names', () => {
@@ -96,4 +97,22 @@ test('extension sensitive-query classifier preserves current safe near-matches',
       `expected non-sensitive query key: ${value}`
     );
   }
+});
+test('extension text redactor preserves current authorization cookie and assignment behavior', () => {
+  const input =
+    'Authorization: Bearer secret; Cookie: sid=abc123; token=xyz password=hunter2 page=1';
+
+  assert.equal(
+    redactExtensionSensitiveText(input),
+    'Authorization=[REDACTED]; Cookie=[REDACTED]'
+  );
+});
+
+test('extension text redactor preserves safe text', () => {
+  const input = 'content-type=text/plain page=1 request_id=abc';
+
+  assert.equal(
+    redactExtensionSensitiveText(input),
+    input
+  );
 });

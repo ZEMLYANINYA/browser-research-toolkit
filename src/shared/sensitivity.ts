@@ -38,3 +38,18 @@ export function isExtensionSensitiveQueryKey(key: unknown): boolean {
       /^(visitor|client|device|tracking)id$/.test(part)
   );
 }
+const EXTENSION_SENSITIVE_ASSIGNMENT_PATTERN =
+  /\b(csrf|xsrf|access[_-]?token|refresh[_-]?token|password|passwd|secret|api[_-]?key|session(?:id)?|signature|jwt|token|visitor[_-]?id|client[_-]?id|device[_-]?id|tracking[_-]?id)\b\s*["']?\s*[:=]\s*["']?([^\s,&"'}]+)/gi;
+
+const EXTENSION_AUTH_HEADER_TEXT_PATTERN =
+  /\b(authorization|proxy-authorization)\b\s*["']?\s*[:=]\s*["']?[^\r\n,;&}]+/gi;
+
+const EXTENSION_COOKIE_HEADER_TEXT_PATTERN =
+  /\b(cookie|set-cookie)\b\s*["']?\s*[:=]\s*["']?[^\r\n}]+/gi;
+
+export function redactExtensionSensitiveText(value: unknown): string {
+  return String(value ?? '')
+    .replace(EXTENSION_AUTH_HEADER_TEXT_PATTERN, '$1=[REDACTED]')
+    .replace(EXTENSION_COOKIE_HEADER_TEXT_PATTERN, '$1=[REDACTED]')
+    .replace(EXTENSION_SENSITIVE_ASSIGNMENT_PATTERN, '$1=[REDACTED]');
+}
