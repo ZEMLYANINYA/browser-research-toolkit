@@ -219,18 +219,47 @@ test('IndexedDB retry uses a separate bounded timer and lifecycle cleanup', () =
   assert.ok(retryCancels.length >= 3);
 });
 
-test('tab removal cancels delayed IndexedDB retry before dropping flush state', () => {
-  const start = background.indexOf('chrome.tabs?.onRemoved?.addListener((tabId) => {');
-  assert.notEqual(start, -1);
+test('tab removal finalizes persistence before dropping session state', () => {
+  const cleanupStart = background.indexOf('function cleanupRemovedTabState(tabId) {');
+  const finalizerStart = background.indexOf('async function finalizeRemovedTab(tabId) {');
+  const listenerStart = background.indexOf('chrome.tabs?.onRemoved?.addListener((tabId) => {');
 
-  const source = background.slice(start);
+  assert.notEqual(cleanupStart, -1);
+  assert.notEqual(finalizerStart, -1);
+  assert.notEqual(listenerStart, -1);
+
+  const finalizerSource = background.slice(finalizerStart, listenerStart);
+  const marker = finalizerSource.indexOf("diagnostic(session, 'tab-close-finalization'");
+  const flush = finalizerSource.indexOf('await flushSessionNow(tabId);', marker);
+  const finallyBlock = finalizerSource.indexOf('} finally {', flush);
+  const cleanup = finalizerSource.indexOf('cleanupRemovedTabState(tabId);', finallyBlock);
+
+  assert.ok(marker >= 0);
+  assert.ok(flush > marker);
+  assert.ok(finallyBlock > flush);
+  assert.ok(cleanup > finallyBlock);
+
+  const listenerSource = background.slice(listenerStart);
+  assert.match(listenerSource, /void finalizeRemovedTab\(tabId\);/);
+});
+
+test('removed-tab cleanup cancels persistence timers before dropping flush state', () => {
+  const start = background.indexOf('function cleanupRemovedTabState(tabId) {');
+  const end = background.indexOf('async function finalizeRemovedTab(tabId) {', start);
+
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+
+  const source = background.slice(start, end);
   const stateLookup = source.indexOf('const flushState = flushStates.get(tabId);');
-  const cancelRetry = source.indexOf('cancelIndexedDbRetry(flushState);', stateLookup);
-  const deleteState = source.indexOf('flushStates.delete(tabId);', cancelRetry);
+  const normalTimer = source.indexOf('clearTimeout(flushState.timer)', stateLookup);
+  const retryTimer = source.indexOf('cancelIndexedDbRetry(flushState);', stateLookup);
+  const deleteState = source.indexOf('flushStates.delete(tabId);', retryTimer);
 
   assert.ok(stateLookup >= 0);
-  assert.ok(cancelRetry > stateLookup);
-  assert.ok(deleteState > cancelRetry);
+  assert.ok(normalTimer > stateLookup);
+  assert.ok(retryTimer > normalTimer);
+  assert.ok(deleteState > retryTimer);
 });
 test('flush suspension blocks direct and scheduled persistence', () => {
   const flushStart = background.indexOf('async function flushSession(tabId) {');

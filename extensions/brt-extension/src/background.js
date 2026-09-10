@@ -2481,14 +2481,11 @@ function sanitizeNavigationUrl(url) {
   return sanitizeUrl(url);
 }
 
-chrome.tabs?.onRemoved?.addListener((tabId) => {
-  for (const task of taskRunner.list({ tabId })) taskRunner.cancel(task.taskId, 'Tab closed.');
-  taskAccounting.delete(tabId);
-  antiBotAnalysisCache.delete(tabId);
-  for (const key of pendingSourceTasks.keys()) if (key.startsWith(`${tabId}:`)) pendingSourceTasks.delete(key);
+function cleanupRemovedTabState(tabId) {
   const flushState = flushStates.get(tabId);
   if (flushState?.timer) clearTimeout(flushState.timer);
   cancelIndexedDbRetry(flushState);
+
   flushStates.delete(tabId);
   sessionLoads.delete(tabId);
   cdpTabs.delete(tabId);
@@ -2497,6 +2494,29 @@ chrome.tabs?.onRemoved?.addListener((tabId) => {
   resetEntityDelta(tabId);
   resetIndexedDbBootstrap(tabId);
   sessions.delete(tabId);
-  // Persistent session data is intentionally retained by the persistence backend.
-  // Closing a tab must free RAM without silently destroying the research log.
+}
+
+async function finalizeRemovedTab(tabId) {
+  const session = sessions.get(tabId);
+
+  try {
+    if (!session) return;
+
+    diagnostic(session, 'tab-close-finalization', {
+      sessionId: session.sessionId
+    });
+
+    await flushSessionNow(tabId);
+  } finally {
+    cleanupRemovedTabState(tabId);
+  }
+}
+
+chrome.tabs?.onRemoved?.addListener((tabId) => {
+  for (const task of taskRunner.list({ tabId })) taskRunner.cancel(task.taskId, 'Tab closed.');
+  taskAccounting.delete(tabId);
+  antiBotAnalysisCache.delete(tabId);
+  for (const key of pendingSourceTasks.keys()) if (key.startsWith(`${tabId}:`)) pendingSourceTasks.delete(key);
+
+  void finalizeRemovedTab(tabId);
 });
