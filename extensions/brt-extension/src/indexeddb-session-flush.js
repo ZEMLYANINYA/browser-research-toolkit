@@ -18,6 +18,12 @@ export async function flushSessionToIndexedDb({
     throw new TypeError('persistence.writeBatch is required.');
   }
 
+  const activeSession = {
+    tabId: session.tabId,
+    sessionId: session.sessionId,
+    updatedAt: Date.now()
+  };
+
   const batch = deltaQueue.drain();
   const { header, records: retainedRecords } = decomposeSession(session);
   const records = bootstrap ? retainedRecords : batch.puts;
@@ -25,6 +31,7 @@ export async function flushSessionToIndexedDb({
   try {
     await persistence.writeBatch({
       session: header,
+      activeSession,
       records,
       recordDeletes: bootstrap ? [] : batch.deletes,
       replaceRecordSessionId: bootstrap ? session.sessionId : null

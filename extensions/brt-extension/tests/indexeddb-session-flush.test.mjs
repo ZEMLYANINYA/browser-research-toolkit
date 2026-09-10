@@ -40,6 +40,9 @@ test('incremental flush writes only drained record mutations', async () => {
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].records, [record]);
   assert.deepEqual(calls[0].recordDeletes, []);
+  assert.equal(calls[0].activeSession.tabId, session.tabId);
+  assert.equal(calls[0].activeSession.sessionId, session.sessionId);
+  assert.equal(Number.isFinite(calls[0].activeSession.updatedAt), true);
   assert.equal('timeline' in calls[0].session, false);
   assert.equal('network' in calls[0].session, false);
   assert.equal(queue.isEmpty(), true);

@@ -158,11 +158,27 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
       };
     });
   }
-  async function writeBatch({ session = null, records = [], recordDeletes = [], entities = [], replaceRecordSessionId = null } = {}) {
+  async function writeBatch({
+    session = null,
+    activeSession = null,
+    records = [],
+    recordDeletes = [],
+    entities = [],
+    replaceRecordSessionId = null
+  } = {}) {
+    if (
+      session &&
+      activeSession &&
+      (activeSession.sessionId !== session.sessionId || activeSession.tabId !== session.tabId)
+    ) {
+      throw new TypeError('activeSession must reference the persisted session.');
+    }
+
     const db = await openDatabase();
     const storeNames = [];
 
     if (session) storeNames.push(SESSION_STORE);
+    if (activeSession) storeNames.push(ACTIVE_SESSION_STORE);
     if (records.length || recordDeletes.length || replaceRecordSessionId) storeNames.push(RECORD_STORE);
     if (entities.length) storeNames.push(ENTITY_STORE);
 
@@ -174,6 +190,10 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
     try {
       if (session) {
         tx.objectStore(SESSION_STORE).put(session);
+      }
+
+      if (activeSession) {
+        tx.objectStore(ACTIVE_SESSION_STORE).put(activeSession);
       }
 
       if (records.length || recordDeletes.length || replaceRecordSessionId) {

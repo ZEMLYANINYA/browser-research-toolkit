@@ -521,3 +521,82 @@ test('v1 to v2 migration replaces legacy session headers and preserves evidence'
   assert.equal(entities.length, 1);
   assert.equal(entities[0].entityKey, 'legacy-session:sources:source-1');
 });
+
+test('writeBatch commits session header and active pointer atomically', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('atomic-active-session')
+  });
+
+  const session = {
+    tabId: 51,
+    sessionId: 'atomic-session',
+    runState: 'running'
+  };
+
+  const activeSession = {
+    tabId: 51,
+    sessionId: 'atomic-session',
+    updatedAt: 123
+  };
+
+  await persistence.writeBatch({ session, activeSession });
+
+  assert.deepEqual(await persistence.getSession('atomic-session'), session);
+  assert.deepEqual(await persistence.getActiveSession(51), activeSession);
+});
+
+test('writeBatch rolls back session header and active pointer when a later write fails', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('atomic-active-session-rollback')
+  });
+
+  await assert.rejects(
+    persistence.writeBatch({
+      session: {
+        tabId: 52,
+        sessionId: 'rollback-active-session',
+        runState: 'running'
+      },
+      activeSession: {
+        tabId: 52,
+        sessionId: 'rollback-active-session',
+        updatedAt: 456
+      },
+      entities: [
+        {
+          sessionId: 'rollback-active-session',
+          bucket: 'sources',
+          value: { id: 'missing-entity-key' }
+        }
+      ]
+    })
+  );
+
+  assert.equal(await persistence.getSession('rollback-active-session'), null);
+  assert.equal(await persistence.getActiveSession(52), null);
+});
+
+test('writeBatch rejects an active pointer that does not reference the session header', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('active-session-mismatch')
+  });
+
+  await assert.rejects(
+    persistence.writeBatch({
+      session: {
+        tabId: 53,
+        sessionId: 'session-a',
+        runState: 'running'
+      },
+      activeSession: {
+        tabId: 53,
+        sessionId: 'session-b',
+        updatedAt: 789
+      }
+    }),
+    /activeSession must reference the persisted session/
+  );
+
+  assert.equal(await persistence.getSession('session-a'), null);
+  assert.equal(await persistence.getActiveSession(53), null);
+});
