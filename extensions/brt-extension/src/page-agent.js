@@ -1,6 +1,6 @@
 import { truncateText } from '../../../src/shared/text.ts';
 import { sanitizeUrlWithPolicy } from '../../../src/shared/url.ts';
-import { isExtensionSensitiveFieldName } from '../../../src/shared/sensitivity.ts';
+import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey } from '../../../src/shared/sensitivity.ts';
 
 (() => {
   const CHANNEL = '__BRT_LAB_V01__';
@@ -22,12 +22,6 @@ import { isExtensionSensitiveFieldName } from '../../../src/shared/sensitivity.t
     'verify', 'verification', 'webdriver', 'headless', 'fingerprint', 'managed-challenge'
   ];
 
-  const SENSITIVE_QUERY_KEYS = new Set([
-    'key', 'token', 'apikey', 'api_key', 'secret', 'auth', 'password',
-    'access_token', 'refresh_token', 'session', 'sessionid', 'session_id', 'csrf', 'xsrf', 'code', 'signature', 'sig', 'jwt',
-    'cid', 'sid', 'visitorid', 'visitor_id', 'clientid', 'client_id', 'deviceid', 'device_id', 'trackingid', 'tracking_id',
-    'auid', 'ecid', 'gclid', 'fbclid', 'msclkid', '_ga', '_gid'
-  ]);
   const SENSITIVE_BODY = /\b(csrf|xsrf|access[_-]?token|refresh[_-]?token|password|passwd|secret|api[_-]?key|session(?:id)?|signature|jwt|token|visitor[_-]?id|client[_-]?id|device[_-]?id|tracking[_-]?id)\b\s*["']?\s*[:=]\s*["']?([^\s,&"'}]+)/gi;
   const AUTH_HEADER_TEXT = /\b(authorization|proxy-authorization)\b\s*["']?\s*[:=]\s*["']?[^\r\n,;&}]+/gi;
   const COOKIE_HEADER_TEXT = /\b(cookie|set-cookie)\b\s*["']?\s*[:=]\s*["']?[^\r\n}]+/gi;
@@ -73,14 +67,6 @@ import { isExtensionSensitiveFieldName } from '../../../src/shared/sensitivity.t
   const trim = (value, max) => {
     const text = typeof value === 'string' ? value : String(value ?? '');
     return truncateText(text, max, '\n/* …truncated… */');
-  };
-
-  const isSensitiveQueryKey = (key) => {
-    const lower = String(key || '').toLowerCase();
-    if (SENSITIVE_QUERY_KEYS.has(lower)) return true;
-    const compact = lower.replace(/[^a-z0-9]/g, '');
-    if (SENSITIVE_QUERY_KEYS.has(compact)) return true;
-    return lower.split(/[.\[\]_-]+/).filter(Boolean).some(part => SENSITIVE_QUERY_KEYS.has(part) || /^(visitor|client|device|tracking)id$/.test(part));
   };
 
   const redactSensitiveText = (value, max = LIMITS.maxResponseChars) => trim(String(value ?? '')
@@ -146,7 +132,7 @@ import { isExtensionSensitiveFieldName } from '../../../src/shared/sensitivity.t
     if (!raw || typeof raw !== 'string') return raw ?? '';
 
     return sanitizeUrlWithPolicy(raw, {
-      isSensitiveQueryKey,
+      isSensitiveQueryKey: isExtensionSensitiveQueryKey,
       baseUrl: location.href,
       maxQueryValueLength: 256,
       sanitizeHash: true,
