@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node scripts/check-extension.mjs",
-    "test": "node --test tests/*.test.mjs",
-    "verify": "npm run check && npm test"
+    "check": "npm run build && node scripts/check-extension.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "verify": "npm run build && node scripts/check-extension.mjs && node --test tests/*.test.mjs",
+    "build": "npm --prefix ../.. run bundle:extension-agent && npm --prefix ../.. run bundle:extension-shared"
   }
 }

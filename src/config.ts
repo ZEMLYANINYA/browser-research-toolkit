@@ -6,7 +6,8 @@ export const DEFAULT_CONFIG: ResearchConfig = {
   maxStorageItems: 100,
   maxEndpoints: 200,
   maxJsonResponses: 100,
-  maxResponseSize: 1024 * 1024, // 1 MB
+  maxResponseBytes: 1024 * 1024, // 1 MiB read cap
+  maxResponseSize: 1024 * 1024, // legacy character cap
   endpointTtl: 3600_000, // 1 hour
   maxWebSockets: 50,
   maxPerformanceEntries: 300,

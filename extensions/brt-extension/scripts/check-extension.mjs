@@ -28,11 +28,36 @@ for (const script of manifest.content_scripts || []) {
 if (!existsSync(join(root, manifest.background?.service_worker || ''))) throw new Error('missing service worker');
 if (!existsSync(join(root, manifest.side_panel?.default_path || ''))) throw new Error('missing side panel');
 
-const agentText = readFileSync(join(root, 'src/page-agent.js'), 'utf8');
+const agentSourcePath = join(root, 'src/page-agent.js');
+const agentBundlePath = join(root, 'dist/page-agent.js');
+
+if (!existsSync(agentSourcePath)) {
+  throw new Error('missing page-agent source');
+}
+
+if (!existsSync(agentBundlePath)) {
+  throw new Error('missing generated page-agent bundle; run npm run build');
+}
+
+const agentText = readFileSync(agentSourcePath, 'utf8');
+const bundledAgentText = readFileSync(agentBundlePath, 'utf8');
 const emitted = [...new Set([...agentText.matchAll(/emit\(['\"]([^'\"]+)['\"]/g)].map(match => match[1]))].sort();
 const declared = [...PAGE_EVENT_KINDS].sort();
 if (JSON.stringify(emitted) !== JSON.stringify(declared)) {
   throw new Error(`page event protocol drift\nemitted=${JSON.stringify(emitted)}\ndeclared=${JSON.stringify(declared)}`);
+}
+
+const bundledEmitted = [
+  ...new Set(
+    [...bundledAgentText.matchAll(/emit\(["']([^"']+)["']/g)]
+      .map(match => match[1])
+  )
+].sort();
+
+if (JSON.stringify(bundledEmitted) !== JSON.stringify(declared)) {
+  throw new Error(`bundled page event protocol drift
+emitted=${JSON.stringify(bundledEmitted)}
+declared=${JSON.stringify(declared)}`);
 }
 
 const bridgeText = readFileSync(join(root, 'src/content-bridge.js'), 'utf8');

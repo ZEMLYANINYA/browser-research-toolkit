@@ -6,6 +6,9 @@ export interface ResearchConfig {
   maxStorageItems: number;
   maxEndpoints: number;
   maxJsonResponses: number;
+  /** Maximum response bytes consumed from a fetch clone during bounded analysis. */
+  maxResponseBytes: number;
+  /** Legacy post-read character limit retained separately from the byte cap. */
   maxResponseSize: number;
   endpointTtl: number;
   maxWebSockets: number;

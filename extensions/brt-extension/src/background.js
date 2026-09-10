@@ -1,4 +1,5 @@
-import { LIMITS, trimText, sanitizeUrl } from './shared.js';
+import { LIMITS, trimText, sanitizeUrl, readResponseTextBounded } from './shared.js';
+import { redactExtensionSourceText } from './shared.js';
 import {
   ensureStorageStats, rebuildStorageStats, trackedPush, trackedReplace, removeTrackedAt, adjustTrackedBucketBytes,
   pushTimelineTracked, ensureDocument, resolveCanonicalDocumentId, minimalEventEnvelope,
@@ -493,40 +494,6 @@ function timelineLabel(payload) {
 }
 
 
-async function readResponseTextBounded(response, maxBytes) {
-  const reader = response?.body?.getReader?.();
-  if (!reader) return { text: '', bytesRead: 0, truncated: false, unavailable: true };
-  const decoder = new TextDecoder();
-  let bytesRead = 0;
-  let text = '';
-  let truncated = false;
-  try {
-    while (bytesRead < maxBytes) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      const remaining = maxBytes - bytesRead;
-      if (value.byteLength > remaining) {
-        text += decoder.decode(value.subarray(0, remaining), { stream: true });
-        bytesRead += remaining;
-        truncated = true;
-        await reader.cancel('BRT source size cap reached').catch(() => {});
-        break;
-      }
-      text += decoder.decode(value, { stream: true });
-      bytesRead += value.byteLength;
-    }
-    text += decoder.decode();
-    if (bytesRead >= maxBytes && !truncated) {
-      truncated = true;
-      await reader.cancel('BRT source size cap reached').catch(() => {});
-    }
-    return { text, bytesRead, truncated, unavailable: false };
-  } finally {
-    try { reader.releaseLock?.(); } catch {}
-  }
-}
-
 async function sha256Text(text) {
   try {
     const bytes = new TextEncoder().encode(text || '');
@@ -850,7 +817,7 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
       return;
     }
 
-    const bounded = await readResponseTextBounded(res, LIMITS.maxSourceDownloadBytes);
+    const bounded = await readResponseTextBounded(res, LIMITS.maxSourceDownloadBytes, 'BRT source size cap reached');
     const current = sessions.get(tabId);
     if (taskSignal?.aborted) throw new TaskError('TASK_CANCELLED', 'Source indexing cancelled.');
     if (!current || current.sessionId !== capturedSessionId || current.generation !== capturedGeneration || !current.running) return;
@@ -868,7 +835,7 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
     const contentHash = await sha256Text(rawText);
     const sourceId = `src_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     const sanitizedText = includeBody
-      ? rawText.replace(/(authorization|token|secret|password|cookie|csrf|xsrf|api[_-]?key|session(?:id)?|signature)\s*["']?\s*[:=]\s*["']?[^\s,&"'}]+/gi, '$1=[REDACTED]')
+      ? redactExtensionSourceText(rawText)
       : '';
 
     const sourceRecord = attachPendingSourceObservations({
@@ -1072,7 +1039,7 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
       frameId: sourceFrame.frameId,
       documentUrl: sourceFrame.documentUrl,
       label: canonical.data?.label || 'inline script',
-      text: text.replace(/(authorization|token|secret|password|cookie|csrf|xsrf|api[_-]?key|session(?:id)?|signature)\s*["']?\s*[:=]\s*["']?[^\s,&"'}]+/gi, '$1=[REDACTED]'),
+      text: redactExtensionSourceText(text),
       contentHash,
       staticFindings: staticFindings(
         text,
@@ -1181,7 +1148,7 @@ async function injectAgent(
       frameId,
       documentId
     ),
-    files: ['src/page-agent.js'],
+    files: ['dist/page-agent.js'],
     world: 'MAIN'
   });
 }

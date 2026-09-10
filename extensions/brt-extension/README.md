@@ -39,6 +39,15 @@ therefore use names such as `extension-v0.5.0` rather than a bare `v0.5.0`.
 
 ## Install for local development
 
+Build the generated extension runtime bundles from the repository root first:
+
+```bash
+npm install
+npm --prefix extensions/brt-extension run build
+```
+
+Then:
+
 1. Open `chrome://extensions` in Chrome or Chromium.
 2. Enable **Developer mode**.
 3. Choose **Load unpacked**.
@@ -46,7 +55,9 @@ therefore use names such as `extension-v0.5.0` rather than a bare `v0.5.0`.
 5. Pin Browser Research Toolkit if desired.
 6. Open a normal `http://` or `https://` page and click the extension action to open the side panel.
 
-No build step is required for the runtime extension. The source files in this directory are the files Chrome loads.
+The extension loads generated runtime artifacts from `extensions/brt-extension/dist/`.
+That directory is not committed, so a fresh checkout must be built before using
+**Load unpacked**.
 
 ## Capture modes
 
@@ -225,14 +236,16 @@ The goal is to fail visibly and boundedly rather than convert a long research se
 
 ## Verification
 
-The extension has no runtime npm dependencies. Node is used only for repository checks.
+The extension has no runtime npm dependencies. Node and the repository build
+toolchain are used to generate the extension runtime bundles and run checks.
 
 ```bash
+npm install
 cd extensions/brt-extension
 npm run verify
 ```
 
-`npm run verify` performs:
+`npm run verify` builds the generated runtime artifacts first, then performs:
 
 - JavaScript syntax checks for `src/` and `ui/`.
 - Manifest structure checks.

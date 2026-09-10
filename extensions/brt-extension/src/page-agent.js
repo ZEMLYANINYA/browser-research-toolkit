@@ -1,13 +1,16 @@
+import { truncateText } from '../../../src/shared/text.ts';
+import { sanitizeUrlWithPolicy } from '../../../src/shared/url.ts';
+import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, redactExtensionSensitiveText } from '../../../src/shared/sensitivity.ts';
+import { readResponseTextBounded } from '../../../src/shared/bounded-reader.ts';
+import { EXTENSION_CAPTURE_LIMITS } from '../../../src/shared/limits.ts';
+
 (() => {
   const CHANNEL = '__BRT_LAB_V01__';
 
   const LIMITS = {
-    maxResponseChars: 80_000,
-    maxHtmlChars: 1_500_000,
+    ...EXTENSION_CAPTURE_LIMITS,
     maxInlineScriptChars: 300_000,
-    maxRuntimeEntries: 4000,
     maxResponseBytes: 160_000,
-    maxStructuredBodyChars: 120_000,
     maxFormFields: 500,
     antiBotDomFlushMs: 400,
     antiBotTimerSampleRate: 0.02
@@ -18,16 +21,6 @@
     'verify', 'verification', 'webdriver', 'headless', 'fingerprint', 'managed-challenge'
   ];
 
-  const SENSITIVE_QUERY_KEYS = new Set([
-    'key', 'token', 'apikey', 'api_key', 'secret', 'auth', 'password',
-    'access_token', 'refresh_token', 'session', 'sessionid', 'session_id', 'csrf', 'xsrf', 'code', 'signature', 'sig', 'jwt',
-    'cid', 'sid', 'visitorid', 'visitor_id', 'clientid', 'client_id', 'deviceid', 'device_id', 'trackingid', 'tracking_id',
-    'auid', 'ecid', 'gclid', 'fbclid', 'msclkid', '_ga', '_gid'
-  ]);
-  const SENSITIVE_FIELD = /^(authorization|proxy-authorization|cookie|set-cookie|x-csrf.*|x-xsrf.*|.*(?:token|secret|password|passwd|apikey|api_key|access_token|refresh_token|session|signature|jwt|visitor[_-]?id|client[_-]?id|device[_-]?id|tracking[_-]?id).*)$/i;
-  const SENSITIVE_BODY = /\b(csrf|xsrf|access[_-]?token|refresh[_-]?token|password|passwd|secret|api[_-]?key|session(?:id)?|signature|jwt|token|visitor[_-]?id|client[_-]?id|device[_-]?id|tracking[_-]?id)\b\s*["']?\s*[:=]\s*["']?([^\s,&"'}]+)/gi;
-  const AUTH_HEADER_TEXT = /\b(authorization|proxy-authorization)\b\s*["']?\s*[:=]\s*["']?[^\r\n,;&}]+/gi;
-  const COOKIE_HEADER_TEXT = /\b(cookie|set-cookie)\b\s*["']?\s*[:=]\s*["']?[^\r\n}]+/gi;
 
   const state = {
     active: false,
@@ -69,21 +62,10 @@
 
   const trim = (value, max) => {
     const text = typeof value === 'string' ? value : String(value ?? '');
-    return text.length > max ? text.slice(0, max) + '\n/* …truncated… */' : text;
+    return truncateText(text, max, '\n/* …truncated… */');
   };
 
-  const isSensitiveQueryKey = (key) => {
-    const lower = String(key || '').toLowerCase();
-    if (SENSITIVE_QUERY_KEYS.has(lower)) return true;
-    const compact = lower.replace(/[^a-z0-9]/g, '');
-    if (SENSITIVE_QUERY_KEYS.has(compact)) return true;
-    return lower.split(/[.\[\]_-]+/).filter(Boolean).some(part => SENSITIVE_QUERY_KEYS.has(part) || /^(visitor|client|device|tracking)id$/.test(part));
-  };
-
-  const redactSensitiveText = (value, max = LIMITS.maxResponseChars) => trim(String(value ?? '')
-    .replace(AUTH_HEADER_TEXT, '$1=[REDACTED]')
-    .replace(COOKIE_HEADER_TEXT, '$1=[REDACTED]')
-    .replace(SENSITIVE_BODY, '$1=[REDACTED]'), max);
+  const redactSensitiveText = (value, max = LIMITS.maxResponseChars) => trim(redactExtensionSensitiveText(value), max);
 
   function visibleCookieNames() {
     try {
@@ -141,28 +123,15 @@
 
   const sanitizeUrl = (raw) => {
     if (!raw || typeof raw !== 'string') return raw ?? '';
-    try {
-      const u = new URL(raw, location.href);
-      for (const key of [...u.searchParams.keys()]) {
-        const value = u.searchParams.get(key) || '';
-        if (isSensitiveQueryKey(key)) u.searchParams.set(key, '[REDACTED]');
-        else if (value.length > 256) u.searchParams.set(key, `[TRUNCATED:${value.length}]`);
-      }
-      if (u.hash) {
-        const p = new URLSearchParams(u.hash.slice(1));
-        let changed = false;
-        for (const key of [...p.keys()]) {
-          if (isSensitiveQueryKey(key)) {
-            p.set(key, '[REDACTED]');
-            changed = true;
-          }
-        }
-        u.hash = changed ? p.toString() : '[REDACTED]';
-      }
-      return u.toString();
-    } catch {
-      return '[UNPARSEABLE_URL_REDACTED]';
-    }
+
+    return sanitizeUrlWithPolicy(raw, {
+      isSensitiveQueryKey: isExtensionSensitiveQueryKey,
+      baseUrl: location.href,
+      maxQueryValueLength: 256,
+      sanitizeHash: true,
+      redactOpaqueHash: true,
+      malformedResult: '[UNPARSEABLE_URL_REDACTED]'
+    });
   };
 
   const sanitizeObject = (value, depth = 0, seen = new WeakSet()) => {
@@ -181,7 +150,7 @@
       };
       if (Array.isArray(value)) return keys.map(key => sanitizeObject(read(key), depth + 1, seen));
       const out = {};
-      for (const key of keys) out[key] = SENSITIVE_FIELD.test(key) ? '[REDACTED]' : sanitizeObject(read(key), depth + 1, seen);
+      for (const key of keys) out[key] = isExtensionSensitiveFieldName(key) ? '[REDACTED]' : sanitizeObject(read(key), depth + 1, seen);
       return out;
     } finally {
       seen.delete(value);
@@ -202,40 +171,6 @@
     return redactSensitiveText(bounded, LIMITS.maxResponseChars);
   };
 
-  async function readResponseTextBounded(response, maxBytes) {
-    const reader = response?.body?.getReader?.();
-    if (!reader) return { text: '', bytesRead: 0, truncated: false, unavailable: true };
-    const decoder = new TextDecoder();
-    let text = '';
-    let bytesRead = 0;
-    let truncated = false;
-    try {
-      while (bytesRead < maxBytes) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        const remaining = maxBytes - bytesRead;
-        if (value.byteLength > remaining) {
-          text += decoder.decode(value.subarray(0, remaining), { stream: true });
-          bytesRead += remaining;
-          truncated = true;
-          await reader.cancel('BRT body cap reached').catch(() => {});
-          break;
-        }
-        text += decoder.decode(value, { stream: true });
-        bytesRead += value.byteLength;
-      }
-      text += decoder.decode();
-      if (bytesRead >= maxBytes && !truncated) {
-        truncated = true;
-        await reader.cancel('BRT body cap reached').catch(() => {});
-      }
-      return { text, bytesRead, truncated, unavailable: false };
-    } finally {
-      try { reader.releaseLock?.(); } catch {}
-    }
-  }
-
   const describeTarget = (node) => {
     if (!(node instanceof Element)) return { node: node?.nodeName || 'unknown' };
     const tag = node.tagName.toLowerCase();
@@ -248,7 +183,7 @@
       selectorHint: trim(`${tag}${id}${classes}`, 300),
       role: role ? redactSensitiveText(role, 100) : null,
       type: type ? redactSensitiveText(type, 100) : null,
-      name: name && !SENSITIVE_FIELD.test(name) ? redactSensitiveText(name, 100) : null
+      name: name && !isExtensionSensitiveFieldName(name) ? redactSensitiveText(name, 100) : null
     };
   };
 
@@ -303,7 +238,7 @@
           const contentType = response.headers?.get?.('content-type') || '';
           if (state.captureMode !== 'light' && /json|text|javascript|xml|html|graphql/i.test(contentType)) {
             const clone = response.clone();
-            readResponseTextBounded(clone, LIMITS.maxResponseBytes).then(result => {
+            readResponseTextBounded(clone, LIMITS.maxResponseBytes, 'BRT body cap reached').then(result => {
               if (!state.active || capturedGeneration !== state.generation || result.unavailable) return;
               emit('network-body', {
                 requestId,
@@ -340,7 +275,7 @@
 
     proto.setRequestHeader = function(name, value) {
       const meta = state.xhrMeta.get(this);
-      if (meta) meta.headers[String(name)] = SENSITIVE_FIELD.test(String(name)) ? '[REDACTED]' : trim(String(value), 500);
+      if (meta) meta.headers[String(name)] = isExtensionSensitiveFieldName(String(name)) ? '[REDACTED]' : trim(String(value), 500);
       return Reflect.apply(state.originals.xhrSetRequestHeader, this, arguments);
     };
 
@@ -814,7 +749,7 @@
     const entries = [];
     const keys = Reflect.ownKeys(window).filter(key => typeof key === 'string').slice(0, LIMITS.maxRuntimeEntries);
     for (const key of keys) {
-      if (SENSITIVE_FIELD.test(key)) continue;
+      if (isExtensionSensitiveFieldName(key)) continue;
       let value;
       let descriptor;
       try { descriptor = Object.getOwnPropertyDescriptor(window, key); } catch { continue; }
@@ -836,7 +771,7 @@
       if (Array.isArray(value)) return value.slice(0, 50).map(item => snapshotWithoutGetters(item, depth + 1, seen));
       const out = {};
       for (const key of Reflect.ownKeys(value).filter(key => typeof key === 'string').slice(0, 100)) {
-        if (SENSITIVE_FIELD.test(key)) { out[key] = '[REDACTED]'; continue; }
+        if (isExtensionSensitiveFieldName(key)) { out[key] = '[REDACTED]'; continue; }
         let descriptor;
         try { descriptor = Object.getOwnPropertyDescriptor(value, key); } catch { continue; }
         if (!descriptor) continue;
