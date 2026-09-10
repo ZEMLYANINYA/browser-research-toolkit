@@ -1,4 +1,4 @@
-import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, sanitizeUrlWithPolicy, truncateText } from '../dist/shared-text.js';
+import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, redactExtensionSensitiveText, sanitizeUrlWithPolicy, truncateText } from '../dist/shared-text.js';
 
 export const CHANNEL = '__BRT_LAB_V01__';
 
@@ -20,15 +20,9 @@ export const LIMITS = Object.freeze({
   maxAntiBotSignals: 500
 });
 
-const SENSITIVE_ASSIGNMENT = /\b(csrf|xsrf|access[_-]?token|refresh[_-]?token|password|passwd|secret|api[_-]?key|session(?:id)?|signature|jwt|token|visitor[_-]?id|client[_-]?id|device[_-]?id|tracking[_-]?id)\b\s*["']?\s*[:=]\s*["']?([^\s,&"'}]+)/gi;
-const AUTH_HEADER_TEXT = /\b(authorization|proxy-authorization)\b\s*["']?\s*[:=]\s*["']?[^\r\n,;&}]+/gi;
-const COOKIE_HEADER_TEXT = /\b(cookie|set-cookie)\b\s*["']?\s*[:=]\s*["']?[^\r\n}]+/gi;
 
 export function redactSensitiveText(value, maxChars = 80_000) {
-  return trimText(String(value ?? '')
-    .replace(AUTH_HEADER_TEXT, '$1=[REDACTED]')
-    .replace(COOKIE_HEADER_TEXT, '$1=[REDACTED]')
-    .replace(SENSITIVE_ASSIGNMENT, '$1=[REDACTED]'), maxChars);
+  return trimText(redactExtensionSensitiveText(value), maxChars);
 }
 
 export function sanitizeUrl(rawUrl) {
