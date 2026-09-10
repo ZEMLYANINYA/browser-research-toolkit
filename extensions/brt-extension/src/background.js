@@ -17,6 +17,7 @@ import { classifySourceFetchPolicy } from './source-policy.js';
 import { TaskRunner, TaskError } from './task-runner.js';
 import { generateParserBlueprint } from './parser-blueprint.js';
 import { renderParserBlueprintMarkdown } from './parser-blueprint-markdown.js';
+import { createSessionPersistence } from './session-persistence.js';
 
 const sessions = new Map();
 const cdpTabs = new Set();
@@ -28,6 +29,7 @@ const pendingSourceTasks = new Map();
 const pendingSourceObservations = new Map();
 const taskAccounting = new Map();
 const antiBotAnalysisCache = new Map();
+const sessionPersistence = createSessionPersistence(chrome.storage.local);
 
 const DEFAULT_COUNTERS = Object.freeze({
   requests: 0, responses: 0, bodies: 0, domEvents: 0, navigations: 0, sources: 0,
@@ -147,9 +149,8 @@ async function loadSession(tabId) {
   if (sessionLoads.has(tabId)) return sessionLoads.get(tabId);
 
   const pending = (async () => {
-    const key = `brt_session_${tabId}`;
-    const stored = await chrome.storage.local.get(key);
-    const session = stored[key] || freshSession(tabId);
+    const storedSession = await sessionPersistence.load(tabId);
+    const session = storedSession || freshSession(tabId);
     session.schemaVersion = Math.max(Number(session.schemaVersion) || 2, 4);
     session.sessionId = session.sessionId || `session_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     session.preserveSession = session.preserveSession !== false;
@@ -253,8 +254,7 @@ async function flushSession(tabId) {
   state.dirty = false;
   try {
     applyBackpressure(session);
-    const key = `brt_session_${tabId}`;
-    await chrome.storage.local.set({ [key]: session });
+    await sessionPersistence.save(tabId, session);
   } catch (error) {
     diagnostic(session, 'storage-write-failed', { message: String(error?.message || error) });
   } finally {
@@ -1593,7 +1593,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         antiBotAnalysisCache.delete(tab.id);
         for (const key of pendingSourceTasks.keys()) if (key.startsWith(`${tab.id}:`)) pendingSourceTasks.delete(key);
         sessions.set(tab.id, freshSession(tab.id));
-        await chrome.storage.local.remove(`brt_session_${tab.id}`);
+        await sessionPersistence.remove(tab.id);
       }
       sendResponse({ ok: true });
       return;
@@ -2041,6 +2041,6 @@ chrome.tabs?.onRemoved?.addListener((tabId) => {
   cdpTabs.delete(tabId);
   generationCounters.delete(tabId);
   sessions.delete(tabId);
-  // Persistent session data is intentionally retained in chrome.storage.local.
+  // Persistent session data is intentionally retained by the persistence backend.
   // Closing a tab must free RAM without silently destroying the research log.
 });
