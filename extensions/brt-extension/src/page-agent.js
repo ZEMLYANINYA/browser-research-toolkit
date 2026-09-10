@@ -2,17 +2,15 @@ import { truncateText } from '../../../src/shared/text.ts';
 import { sanitizeUrlWithPolicy } from '../../../src/shared/url.ts';
 import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, redactExtensionSensitiveText } from '../../../src/shared/sensitivity.ts';
 import { readResponseTextBounded } from '../../../src/shared/bounded-reader.ts';
+import { EXTENSION_CAPTURE_LIMITS } from '../../../src/shared/limits.ts';
 
 (() => {
   const CHANNEL = '__BRT_LAB_V01__';
 
   const LIMITS = {
-    maxResponseChars: 80_000,
-    maxHtmlChars: 1_500_000,
+    ...EXTENSION_CAPTURE_LIMITS,
     maxInlineScriptChars: 300_000,
-    maxRuntimeEntries: 4000,
     maxResponseBytes: 160_000,
-    maxStructuredBodyChars: 120_000,
     maxFormFields: 500,
     antiBotDomFlushMs: 400,
     antiBotTimerSampleRate: 0.02

@@ -9,3 +9,4 @@ export {
   isPageEventKind,
   validatePageEventEnvelope
 } from './evidence.js';
+export { EXTENSION_CAPTURE_LIMITS } from './limits.js';

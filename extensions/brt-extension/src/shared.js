@@ -1,4 +1,4 @@
-import { PAGE_EVENT_KINDS, isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, readResponseTextBounded, redactExtensionSensitiveText, sanitizeUrlWithPolicy, truncateText, validatePageEventEnvelope } from '../dist/shared-text.js';
+import { EXTENSION_CAPTURE_LIMITS, PAGE_EVENT_KINDS, isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, readResponseTextBounded, redactExtensionSensitiveText, sanitizeUrlWithPolicy, truncateText, validatePageEventEnvelope } from '../dist/shared-text.js';
 
 export { PAGE_EVENT_KINDS, validatePageEventEnvelope };
 
@@ -7,17 +7,14 @@ export { readResponseTextBounded };
 export const CHANNEL = '__BRT_LAB_V01__';
 
 export const LIMITS = Object.freeze({
+  ...EXTENSION_CAPTURE_LIMITS,
   maxTimelineEvents: 2500,
   maxNetworkRecords: 1000,
   maxSources: 120,
   maxSourceChars: 300_000,
-  maxResponseChars: 80_000,
-  maxHtmlChars: 1_500_000,
-  maxRuntimeEntries: 4000,
   maxSearchResults: 300,
   maxBodyBytes: 2_000_000,
   maxSourceDownloadBytes: 2_000_000,
-  maxStructuredBodyChars: 120_000,
   maxBodyPreviewChars: 80_000,
   maxPersistedBytes: 25_000_000,
   maxDiagnostics: 300,
