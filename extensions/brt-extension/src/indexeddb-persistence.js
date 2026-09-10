@@ -1,7 +1,8 @@
 const DEFAULT_DB_NAME = 'brt-extension';
-const DEFAULT_DB_VERSION = 1;
+const DEFAULT_DB_VERSION = 2;
 
 export const SESSION_STORE = 'sessions';
+export const ACTIVE_SESSION_STORE = 'activeSessions';
 export const RECORD_STORE = 'records';
 export const ENTITY_STORE = 'entities';
 
@@ -33,11 +34,33 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
     dbPromise = new Promise((resolve, reject) => {
       const request = indexedDbFactory.open(dbName, dbVersion);
 
-      request.onupgradeneeded = () => {
+      request.onupgradeneeded = event => {
         const db = request.result;
 
+        const usesSessionKeyedSchema = db.version >= 2;
+
+        if (
+          usesSessionKeyedSchema &&
+          event.oldVersion < 2 &&
+          db.objectStoreNames.contains(SESSION_STORE)
+        ) {
+          db.deleteObjectStore(SESSION_STORE);
+        }
+
         if (!db.objectStoreNames.contains(SESSION_STORE)) {
-          db.createObjectStore(SESSION_STORE, { keyPath: 'tabId' });
+          if (usesSessionKeyedSchema) {
+            const store = db.createObjectStore(SESSION_STORE, { keyPath: 'sessionId' });
+            store.createIndex('byTab', 'tabId', { unique: false });
+          } else {
+            db.createObjectStore(SESSION_STORE, { keyPath: 'tabId' });
+          }
+        }
+
+        if (
+          usesSessionKeyedSchema &&
+          !db.objectStoreNames.contains(ACTIVE_SESSION_STORE)
+        ) {
+          db.createObjectStore(ACTIVE_SESSION_STORE, { keyPath: 'tabId' });
         }
 
         if (!db.objectStoreNames.contains(RECORD_STORE)) {
@@ -190,14 +213,23 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
   }
   return Object.freeze({
     openDatabase,
-    getSession(tabId) {
-      return get(SESSION_STORE, tabId);
+    getSession(sessionId) {
+      return get(SESSION_STORE, sessionId);
     },
     putSession(sessionHeader) {
       return put(SESSION_STORE, sessionHeader);
     },
-    deleteSession(tabId) {
-      return remove(SESSION_STORE, tabId);
+    deleteSession(sessionId) {
+      return remove(SESSION_STORE, sessionId);
+    },
+    getActiveSession(tabId) {
+      return get(ACTIVE_SESSION_STORE, tabId);
+    },
+    putActiveSession(pointer) {
+      return put(ACTIVE_SESSION_STORE, pointer);
+    },
+    deleteActiveSession(tabId) {
+      return remove(ACTIVE_SESSION_STORE, tabId);
     },
     putRecord(record) {
       return put(RECORD_STORE, record);

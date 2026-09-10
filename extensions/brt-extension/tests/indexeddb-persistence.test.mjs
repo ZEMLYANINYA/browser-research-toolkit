@@ -5,6 +5,7 @@ import { indexedDB } from 'fake-indexeddb';
 import {
   createIndexedDbPersistence,
   SESSION_STORE,
+  ACTIVE_SESSION_STORE,
   RECORD_STORE,
   ENTITY_STORE
 } from '../src/indexeddb-persistence.js';
@@ -13,20 +14,26 @@ function dbName(label) {
   return `brt-test-${label}-${Date.now()}-${Math.random()}`;
 }
 
-test('opens v1 database with expected stores', async () => {
+test('opens v2 database with session-keyed stores', async () => {
   const persistence = createIndexedDbPersistence(indexedDB, {
     dbName: dbName('schema')
   });
 
   const db = await persistence.openDatabase();
 
-  assert.equal(db.version, 1);
+  assert.equal(db.version, 2);
   assert.equal(db.objectStoreNames.contains(SESSION_STORE), true);
+  assert.equal(db.objectStoreNames.contains(ACTIVE_SESSION_STORE), true);
   assert.equal(db.objectStoreNames.contains(RECORD_STORE), true);
   assert.equal(db.objectStoreNames.contains(ENTITY_STORE), true);
+
+  const tx = db.transaction(SESSION_STORE, 'readonly');
+  const store = tx.objectStore(SESSION_STORE);
+  assert.equal(store.keyPath, 'sessionId');
+  assert.equal(store.indexNames.contains('byTab'), true);
 });
 
-test('session header round-trips by tabId', async () => {
+test('session header round-trips by sessionId', async () => {
   const persistence = createIndexedDbPersistence(indexedDB, {
     dbName: dbName('session')
   });
@@ -34,10 +41,10 @@ test('session header round-trips by tabId', async () => {
   const session = { tabId: 7, sessionId: 'session-test', runState: 'running' };
 
   await persistence.putSession(session);
-  assert.deepEqual(await persistence.getSession(7), session);
+  assert.deepEqual(await persistence.getSession('session-test'), session);
 
-  await persistence.deleteSession(7);
-  assert.equal(await persistence.getSession(7), null);
+  await persistence.deleteSession('session-test');
+  assert.equal(await persistence.getSession('session-test'), null);
 });
 
 test('append-style record round-trips by recordKey', async () => {
@@ -185,7 +192,7 @@ test('writeBatch persists session records and entities atomically', async () => 
     ]
   });
 
-  assert.equal((await persistence.getSession(11)).sessionId, 'batch-session');
+  assert.equal((await persistence.getSession('batch-session')).sessionId, 'batch-session');
   assert.equal((await persistence.getRecordsBySession('batch-session')).length, 2);
   assert.equal((await persistence.getEntitiesBySession('batch-session')).length, 1);
 });
@@ -221,7 +228,7 @@ test('writeBatch rolls back earlier writes when a later write fails', async () =
     })
   );
 
-  assert.equal(await persistence.getSession(21), null);
+  assert.equal(await persistence.getSession('rollback-session'), null);
   assert.equal(
     await persistence.getRecord('rollback-session:timeline:1'),
     null
@@ -284,7 +291,7 @@ test('writeBatch commits record puts deletes and session header together', async
 
   assert.equal(await persistence.getRecord('mixed-session:timeline:1'), null);
   assert.equal((await persistence.getRecord('mixed-session:timeline:2')).sequence, 2);
-  assert.equal((await persistence.getSession(31)).sessionId, 'mixed-session');
+  assert.equal((await persistence.getSession('mixed-session')).sessionId, 'mixed-session');
 });
 
 test('writeBatch replacement removes stale records from the same session', async () => {
@@ -333,7 +340,7 @@ test('writeBatch replacement removes stale records from the same session', async
     ['replace-session:timeline:1']
   );
   assert.equal(await persistence.getRecord('replace-session:timeline:2'), null);
-  assert.equal((await persistence.getSession(41)).sessionId, 'replace-session');
+  assert.equal((await persistence.getSession('replace-session')).sessionId, 'replace-session');
 });
 
 test('writeBatch replacement leaves records from other sessions untouched', async () => {
@@ -408,4 +415,109 @@ test('writeBatch rejects foreign records during session replacement', async () =
 
   assert.equal((await persistence.getRecord('target-session:timeline:1')).sequence, 1);
   assert.equal(await persistence.getRecord('foreign-session:timeline:2'), null);
+});
+
+test('active session pointer round-trips by tabId', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('active-session')
+  });
+
+  const pointer = {
+    tabId: 7,
+    sessionId: 'session-test',
+    updatedAt: 123
+  };
+
+  await persistence.putActiveSession(pointer);
+  assert.deepEqual(await persistence.getActiveSession(7), pointer);
+
+  await persistence.deleteActiveSession(7);
+  assert.equal(await persistence.getActiveSession(7), null);
+});
+
+test('v1 to v2 migration replaces legacy session headers and preserves evidence', async () => {
+  const name = dbName('v1-to-v2-migration');
+
+  const openV1 = indexedDB.open(name, 1);
+
+  openV1.onupgradeneeded = () => {
+    const db = openV1.result;
+
+    db.createObjectStore(SESSION_STORE, { keyPath: 'tabId' });
+
+    const records = db.createObjectStore(RECORD_STORE, { keyPath: 'recordKey' });
+    records.createIndex('bySession', 'sessionId', { unique: false });
+    records.createIndex('bySessionBucketSequence', ['sessionId', 'bucket', 'sequence'], { unique: false });
+
+    const entities = db.createObjectStore(ENTITY_STORE, { keyPath: 'entityKey' });
+    entities.createIndex('bySession', 'sessionId', { unique: false });
+    entities.createIndex('bySessionBucket', ['sessionId', 'bucket'], { unique: false });
+  };
+
+  const legacyDb = await new Promise((resolve, reject) => {
+    openV1.onsuccess = () => resolve(openV1.result);
+    openV1.onerror = () => reject(openV1.error);
+  });
+
+  await new Promise((resolve, reject) => {
+    const tx = legacyDb.transaction(
+      [SESSION_STORE, RECORD_STORE, ENTITY_STORE],
+      'readwrite'
+    );
+
+    tx.objectStore(SESSION_STORE).put({
+      tabId: 17,
+      sessionId: 'legacy-session',
+      runState: 'running'
+    });
+
+    tx.objectStore(RECORD_STORE).put({
+      recordKey: 'legacy-session:timeline:4',
+      sessionId: 'legacy-session',
+      bucket: 'timeline',
+      sequence: 4,
+      value: { kind: 'legacy-record' }
+    });
+
+    tx.objectStore(ENTITY_STORE).put({
+      entityKey: 'legacy-session:sources:source-1',
+      sessionId: 'legacy-session',
+      bucket: 'sources',
+      value: { id: 'source-1' }
+    });
+
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error || new Error('Legacy fixture transaction aborted.'));
+    tx.onerror = () => reject(tx.error || new Error('Legacy fixture transaction failed.'));
+  });
+
+  legacyDb.close();
+
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: name
+  });
+
+  const migratedDb = await persistence.openDatabase();
+
+  assert.equal(migratedDb.version, 2);
+  assert.equal(migratedDb.objectStoreNames.contains(ACTIVE_SESSION_STORE), true);
+
+  const schemaTx = migratedDb.transaction(SESSION_STORE, 'readonly');
+  const sessionStore = schemaTx.objectStore(SESSION_STORE);
+
+  assert.equal(sessionStore.keyPath, 'sessionId');
+  assert.equal(sessionStore.indexNames.contains('byTab'), true);
+
+  assert.equal(await persistence.getSession('legacy-session'), null);
+  assert.equal(await persistence.getActiveSession(17), null);
+
+  const records = await persistence.getRecordsBySession('legacy-session');
+  const entities = await persistence.getEntitiesBySession('legacy-session');
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0].recordKey, 'legacy-session:timeline:4');
+  assert.equal(records[0].value.kind, 'legacy-record');
+
+  assert.equal(entities.length, 1);
+  assert.equal(entities[0].entityKey, 'legacy-session:sources:source-1');
 });
