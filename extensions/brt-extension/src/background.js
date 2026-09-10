@@ -18,6 +18,8 @@ import { TaskRunner, TaskError } from './task-runner.js';
 import { generateParserBlueprint } from './parser-blueprint.js';
 import { renderParserBlueprintMarkdown } from './parser-blueprint-markdown.js';
 import { createSessionPersistence } from './session-persistence.js';
+import { createIndexedDbPersistence } from './indexeddb-persistence.js';
+import { flushSessionToIndexedDb } from './indexeddb-session-flush.js';
 import { createRecordDeltaQueue } from './record-delta-queue.js';
 import { createPersistedRecord } from './session-persistence-model.js';
 
@@ -28,11 +30,13 @@ const generationCounters = new Map();
 const sessionLoads = new Map();
 const flushStates = new Map();
 const recordDeltas = new Map();
+const indexedDbBootstraps = new Map();
 const pendingSourceTasks = new Map();
 const pendingSourceObservations = new Map();
 const taskAccounting = new Map();
 const antiBotAnalysisCache = new Map();
 const sessionPersistence = createSessionPersistence(chrome.storage.local);
+const indexedDbPersistence = createIndexedDbPersistence(globalThis.indexedDB);
 
 const DEFAULT_COUNTERS = Object.freeze({
   requests: 0, responses: 0, bodies: 0, domEvents: 0, navigations: 0, sources: 0,
@@ -231,6 +235,18 @@ function queueRecordDelete(session, bucket, value) {
 function resetRecordDelta(tabId) {
   recordDeltas.delete(tabId);
 }
+
+function isIndexedDbBootstrapped(session) {
+  return indexedDbBootstraps.get(session.tabId) === session.sessionId;
+}
+
+function markIndexedDbBootstrapped(session) {
+  indexedDbBootstraps.set(session.tabId, session.sessionId);
+}
+
+function resetIndexedDbBootstrap(tabId) {
+  indexedDbBootstraps.delete(tabId);
+}
 function getFlushState(tabId) {
   let state = flushStates.get(tabId);
   if (!state) {
@@ -296,11 +312,35 @@ async function flushSession(tabId) {
 
   state.inFlight = true;
   state.dirty = false;
+
   try {
     applyBackpressure(session);
-    await sessionPersistence.save(tabId, session);
-  } catch (error) {
-    diagnostic(session, 'storage-write-failed', { message: String(error?.message || error) });
+
+    const deltaQueue = getSessionRecordDelta(session);
+    const bootstrap = !isIndexedDbBootstrapped(session);
+
+    try {
+      await sessionPersistence.save(tabId, session);
+    } catch (error) {
+      diagnostic(session, 'storage-write-failed', { message: String(error?.message || error) });
+    }
+
+    if (sessions.get(tabId)?.sessionId !== session.sessionId) {
+      return;
+    }
+
+    try {
+      await flushSessionToIndexedDb({
+        session,
+        deltaQueue,
+        persistence: indexedDbPersistence,
+        bootstrap
+      });
+
+      if (bootstrap && sessions.get(tabId)?.sessionId === session.sessionId) markIndexedDbBootstrapped(session);
+    } catch (error) {
+      diagnostic(session, 'indexeddb-write-failed', { message: String(error?.message || error) });
+    }
   } finally {
     state.inFlight = false;
     if (state.dirty && sessions.has(tabId)) scheduleFlush(tabId, 50);
@@ -1579,6 +1619,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       const session = freshSession(tab.id);
       resetRecordDelta(tab.id);
+      resetIndexedDbBootstrap(tab.id);
       taskAccounting.delete(tab.id);
       antiBotAnalysisCache.delete(tab.id);
       session.running = true;
@@ -1650,6 +1691,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         antiBotAnalysisCache.delete(tab.id);
         for (const key of pendingSourceTasks.keys()) if (key.startsWith(`${tab.id}:`)) pendingSourceTasks.delete(key);
         resetRecordDelta(tab.id);
+        resetIndexedDbBootstrap(tab.id);
         sessions.set(tab.id, freshSession(tab.id));
         await sessionPersistence.remove(tab.id);
       }
@@ -1930,6 +1972,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const imported = message.session;
       const session = { ...freshSession(tab.id), ...imported, tabId: tab.id, sessionId: `import_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, running: false, importedReadOnly: true, importedAt: Date.now() };
       resetRecordDelta(tab.id);
+      resetIndexedDbBootstrap(tab.id);
       taskAccounting.delete(tab.id);
       antiBotAnalysisCache.delete(tab.id);
       ensureSessionCounters(session);
@@ -2100,6 +2143,7 @@ chrome.tabs?.onRemoved?.addListener((tabId) => {
   cdpTabs.delete(tabId);
   generationCounters.delete(tabId);
   resetRecordDelta(tabId);
+  resetIndexedDbBootstrap(tabId);
   sessions.delete(tabId);
   // Persistent session data is intentionally retained by the persistence backend.
   // Closing a tab must free RAM without silently destroying the research log.
