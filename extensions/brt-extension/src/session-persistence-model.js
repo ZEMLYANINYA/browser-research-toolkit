@@ -10,6 +10,29 @@ function recordKey(sessionId, bucket, item) {
   return `${sessionId}:${bucket}:${sequence}`;
 }
 
+export function createPersistedRecord(sessionId, bucket, value) {
+  if (!sessionId) {
+    throw new TypeError('sessionId is required.');
+  }
+
+  if (!RECORD_BUCKETS.includes(bucket)) {
+    throw new TypeError(`Unsupported record bucket: ${bucket}`);
+  }
+
+  const sequence = Number(value?.sequence);
+
+  if (!Number.isInteger(sequence) || sequence < 0) {
+    throw new TypeError(`${bucket} record requires a stable integer sequence.`);
+  }
+
+  return {
+    recordKey: recordKey(sessionId, bucket, value),
+    sessionId,
+    bucket,
+    sequence,
+    value
+  };
+}
 export function decomposeSession(session) {
   if (!session || typeof session !== 'object') {
     throw new TypeError('session is required.');
@@ -26,14 +49,8 @@ export function decomposeSession(session) {
     const items = Array.isArray(session[bucket]) ? session[bucket] : [];
     delete header[bucket];
 
-    items.forEach((value, index) => {
-      records.push({
-        recordKey: recordKey(session.sessionId, bucket, value),
-        sessionId: session.sessionId,
-        bucket,
-        sequence: value.sequence,
-        value
-      });
+    items.forEach(value => {
+      records.push(createPersistedRecord(session.sessionId, bucket, value));
     });
   }
 

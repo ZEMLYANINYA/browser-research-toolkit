@@ -18,6 +18,8 @@ import { TaskRunner, TaskError } from './task-runner.js';
 import { generateParserBlueprint } from './parser-blueprint.js';
 import { renderParserBlueprintMarkdown } from './parser-blueprint-markdown.js';
 import { createSessionPersistence } from './session-persistence.js';
+import { createRecordDelta } from './record-delta.js';
+import { createPersistedRecord } from './session-persistence-model.js';
 
 const sessions = new Map();
 const cdpTabs = new Set();
@@ -25,6 +27,7 @@ const cdpAttachInFlight = new Map();
 const generationCounters = new Map();
 const sessionLoads = new Map();
 const flushStates = new Map();
+const recordDeltas = new Map();
 const pendingSourceTasks = new Map();
 const pendingSourceObservations = new Map();
 const taskAccounting = new Map();
@@ -189,6 +192,45 @@ async function loadSession(tabId) {
   return pending;
 }
 
+function getSessionRecordDelta(session) {
+  const tabId = Number(session?.tabId);
+
+  if (!Number.isInteger(tabId)) {
+    throw new TypeError('session.tabId is required for record persistence.');
+  }
+
+  if (!session?.sessionId) {
+    throw new TypeError('session.sessionId is required for record persistence.');
+  }
+
+  let state = recordDeltas.get(tabId);
+
+  if (!state || state.sessionId !== session.sessionId) {
+    state = {
+      sessionId: session.sessionId,
+      delta: createRecordDelta()
+    };
+    recordDeltas.set(tabId, state);
+  }
+
+  return state.delta;
+}
+
+function queueRecordPut(session, bucket, value) {
+  const record = createPersistedRecord(session.sessionId, bucket, value);
+  getSessionRecordDelta(session).put(record);
+  return record;
+}
+
+function queueRecordDelete(session, bucket, value) {
+  if (!value) return;
+  const record = createPersistedRecord(session.sessionId, bucket, value);
+  getSessionRecordDelta(session).remove(record.recordKey);
+}
+
+function resetRecordDelta(tabId) {
+  recordDeltas.delete(tabId);
+}
 function getFlushState(tabId) {
   let state = flushStates.get(tabId);
   if (!state) {
@@ -212,12 +254,14 @@ function applyBackpressure(session) {
   while (stats.approxBytes > target && session.timeline.length) {
     const index = session.timeline.findIndex(item => /performance|mutation|worker-awareness|storage-snapshot|timer-/.test(item.kind || ''));
     if (index < 0) break;
-    removeTrackedAt(session, 'timeline', index, 'timeline');
+    const evicted = removeTrackedAt(session, 'timeline', index, 'timeline');
+    queueRecordDelete(session, 'timeline', evicted);
     removedTimeline += 1;
   }
 
   while (stats.approxBytes > target && session.network.length > 100) {
-    removeTrackedAt(session, 'network', 0, 'network');
+    const evicted = removeTrackedAt(session, 'network', 0, 'network');
+    queueRecordDelete(session, 'network', evicted);
     removedNetwork += 1;
     session.retention.networkEvicted = (session.retention.networkEvicted || 0) + 1;
   }
@@ -391,7 +435,17 @@ function pushCapped(arr, item, max) {
 }
 
 function pushTimeline(session, item) {
-  return pushTimelineTracked(session, item, LIMITS.maxTimelineEvents);
+  const result = pushTimelineTracked(session, item, LIMITS.maxTimelineEvents);
+
+  if (result.kept) {
+    queueRecordPut(session, 'timeline', item);
+  }
+
+  if (result.evicted) {
+    queueRecordDelete(session, 'timeline', result.evicted);
+  }
+
+  return result;
 }
 
 function sanitizeCdpEvent(method, params = {}) {
@@ -1063,6 +1117,8 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
     if (!suppressBody) {
       session.retention.networkSeen = (session.retention.networkSeen || 0) + 1;
       const removed = trackedPush(session, 'network', canonical, LIMITS.maxNetworkRecords, 'network');
+      queueRecordPut(session, 'network', canonical);
+      for (const evicted of removed) queueRecordDelete(session, 'network', evicted);
       if (removed.length) session.retention.networkEvicted = (session.retention.networkEvicted || 0) + removed.length;
     }
   }
@@ -1522,6 +1578,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       const session = freshSession(tab.id);
+      resetRecordDelta(tab.id);
       taskAccounting.delete(tab.id);
       antiBotAnalysisCache.delete(tab.id);
       session.running = true;
@@ -1592,6 +1649,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         taskAccounting.delete(tab.id);
         antiBotAnalysisCache.delete(tab.id);
         for (const key of pendingSourceTasks.keys()) if (key.startsWith(`${tab.id}:`)) pendingSourceTasks.delete(key);
+        resetRecordDelta(tab.id);
         sessions.set(tab.id, freshSession(tab.id));
         await sessionPersistence.remove(tab.id);
       }
@@ -1871,6 +1929,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!tab?.id || !message.session || typeof message.session !== 'object') throw new Error('Invalid session import.');
       const imported = message.session;
       const session = { ...freshSession(tab.id), ...imported, tabId: tab.id, sessionId: `import_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, running: false, importedReadOnly: true, importedAt: Date.now() };
+      resetRecordDelta(tab.id);
       taskAccounting.delete(tab.id);
       antiBotAnalysisCache.delete(tab.id);
       ensureSessionCounters(session);
@@ -2040,6 +2099,7 @@ chrome.tabs?.onRemoved?.addListener((tabId) => {
   sessionLoads.delete(tabId);
   cdpTabs.delete(tabId);
   generationCounters.delete(tabId);
+  resetRecordDelta(tabId);
   sessions.delete(tabId);
   // Persistent session data is intentionally retained by the persistence backend.
   // Closing a tab must free RAM without silently destroying the research log.
