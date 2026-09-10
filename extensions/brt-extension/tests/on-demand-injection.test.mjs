@@ -57,7 +57,7 @@ test('bridge-ready recovery targets the announcing frame', () => {
 test('page agent remains MAIN-world and bridge remains isolated-world', () => {
   assert.match(
     background,
-    /files:\s*\['src\/page-agent\.js'\][\s\S]*?world:\s*'MAIN'/
+    /files:\s*\['dist\/page-agent\.js'\][\s\S]*?world:\s*'MAIN'/
   );
 
   assert.match(

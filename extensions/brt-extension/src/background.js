@@ -1181,7 +1181,7 @@ async function injectAgent(
       frameId,
       documentId
     ),
-    files: ['src/page-agent.js'],
+    files: ['dist/page-agent.js'],
     world: 'MAIN'
   });
 }
