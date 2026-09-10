@@ -1,3 +1,5 @@
+import { truncateText } from '../../../src/shared/text.ts';
+
 (() => {
   const CHANNEL = '__BRT_LAB_V01__';
 
@@ -69,7 +71,7 @@
 
   const trim = (value, max) => {
     const text = typeof value === 'string' ? value : String(value ?? '');
-    return text.length > max ? text.slice(0, max) + '\n/* …truncated… */' : text;
+    return truncateText(text, max, '\n/* …truncated… */');
   };
 
   const isSensitiveQueryKey = (key) => {

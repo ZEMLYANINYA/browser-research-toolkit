@@ -1,4 +1,5 @@
 import { SENSITIVE_PATTERNS } from '../config.js';
+import { truncateText } from '../shared/text.js';
 import type { ResearchConfig } from '../types.js';
 
 const REDACTED_QUERY_PARAMS = ['key', 'token', 'apikey', 'api_key', 'secret', 'auth', 'password'];
@@ -148,6 +149,6 @@ export class Sanitizer {
 
   truncate(str: unknown, maxLength: number): string {
     const s = typeof str === 'string' ? str : String(str);
-    return s.length > maxLength ? s.slice(0, maxLength) + '...' : s;
+    return truncateText(s, maxLength, '...');
   }
 }
