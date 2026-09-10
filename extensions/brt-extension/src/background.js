@@ -250,7 +250,7 @@ function resetIndexedDbBootstrap(tabId) {
 function getFlushState(tabId) {
   let state = flushStates.get(tabId);
   if (!state) {
-    state = { timer: null, inFlight: false, dirty: false };
+    state = { timer: null, inFlight: false, dirty: false, promise: null };
     flushStates.set(tabId, state);
   }
   return state;
@@ -303,48 +303,102 @@ function applyBackpressure(session) {
 
 async function flushSession(tabId) {
   const state = getFlushState(tabId);
+
   if (state.inFlight) {
     state.dirty = true;
-    return;
+    return state.promise;
   }
+
   const session = sessions.get(tabId);
   if (!session) return;
 
   state.inFlight = true;
   state.dirty = false;
 
+  const pending = (async () => {
+    try {
+      applyBackpressure(session);
+
+      const deltaQueue = getSessionRecordDelta(session);
+      const bootstrap = !isIndexedDbBootstrapped(session);
+
+      try {
+        await sessionPersistence.save(tabId, session);
+      } catch (error) {
+        diagnostic(session, 'storage-write-failed', { message: String(error?.message || error) });
+      }
+
+      if (sessions.get(tabId)?.sessionId !== session.sessionId) {
+        return;
+      }
+
+      try {
+        await flushSessionToIndexedDb({
+          session,
+          deltaQueue,
+          persistence: indexedDbPersistence,
+          bootstrap
+        });
+
+        if (bootstrap && sessions.get(tabId)?.sessionId === session.sessionId) markIndexedDbBootstrapped(session);
+      } catch (error) {
+        diagnostic(session, 'indexeddb-write-failed', { message: String(error?.message || error) });
+      }
+    } finally {
+      state.inFlight = false;
+      if (state.dirty && sessions.has(tabId)) scheduleFlush(tabId, 50);
+    }
+  })();
+
+  state.promise = pending;
+
   try {
-    applyBackpressure(session);
-
-    const deltaQueue = getSessionRecordDelta(session);
-    const bootstrap = !isIndexedDbBootstrapped(session);
-
-    try {
-      await sessionPersistence.save(tabId, session);
-    } catch (error) {
-      diagnostic(session, 'storage-write-failed', { message: String(error?.message || error) });
-    }
-
-    if (sessions.get(tabId)?.sessionId !== session.sessionId) {
-      return;
-    }
-
-    try {
-      await flushSessionToIndexedDb({
-        session,
-        deltaQueue,
-        persistence: indexedDbPersistence,
-        bootstrap
-      });
-
-      if (bootstrap && sessions.get(tabId)?.sessionId === session.sessionId) markIndexedDbBootstrapped(session);
-    } catch (error) {
-      diagnostic(session, 'indexeddb-write-failed', { message: String(error?.message || error) });
-    }
+    await pending;
   } finally {
-    state.inFlight = false;
-    if (state.dirty && sessions.has(tabId)) scheduleFlush(tabId, 50);
+    if (state.promise === pending) {
+      state.promise = null;
+    }
   }
+}
+
+async function settleFlushBeforeLifecycle(tabId, { flushDirty = false } = {}) {
+  const state = getFlushState(tabId);
+
+  const cancelTimer = () => {
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+  };
+
+  cancelTimer();
+
+  const pending = state.promise;
+  if (pending) {
+    await pending;
+  }
+
+  // The completed flush may have scheduled a dirty tail.
+  cancelTimer();
+
+  while (flushDirty && state.dirty && sessions.has(tabId)) {
+    state.dirty = false;
+    await flushSession(tabId);
+    cancelTimer();
+  }
+
+  state.dirty = false;
+}
+
+async function flushSessionNow(tabId) {
+  const state = getFlushState(tabId);
+
+  if (state.timer) {
+    clearTimeout(state.timer);
+    state.timer = null;
+  }
+
+  return flushSession(tabId);
 }
 
 function scheduleFlush(tabId, delay = 350) {
@@ -1617,6 +1671,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true, tabId: tab.id, sessionId: existing.sessionId, duplicate: true });
         return;
       }
+
+      await settleFlushBeforeLifecycle(tab.id, { flushDirty: true });
+
       const session = freshSession(tab.id);
       resetRecordDelta(tab.id);
       resetIndexedDbBootstrap(tab.id);
@@ -1640,10 +1697,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       session.antiBot = createAntiBotState(antiBotEnabled);
       session.preserveSession = message.preserveSession !== false;
       sessions.set(tab.id, session);
+
+      // Flush the new lifecycle identity before page capture can begin.
+      await flushSessionNow(tab.id);
+
       await injectBridge(tab.id);
       if (session.requestedMode === 'deep') await attachDeepMode(tab.id, session);
       await sendCommand(tab.id, 'START', session.generation, { mode: session.effectiveMode, settings: session.captureSettings });
-      scheduleFlush(tab.id);
+
+      // Flush state/events produced while activating the new run.
+      await flushSessionNow(tab.id);
       sendResponse({ ok: true, tabId: tab.id });
       return;
     }
