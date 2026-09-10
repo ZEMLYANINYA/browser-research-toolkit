@@ -158,6 +158,75 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
       };
     });
   }
+  function deleteByIndex(store, indexName, query) {
+    return new Promise((resolve, reject) => {
+      const request = store.index(indexName).openCursor(query);
+
+      request.onerror = () => {
+        reject(request.error || new Error('IndexedDB indexed delete failed.'));
+      };
+
+      request.onsuccess = () => {
+        try {
+          const cursor = request.result;
+
+          if (!cursor) {
+            resolve();
+            return;
+          }
+
+          cursor.delete();
+          cursor.continue();
+        } catch (error) {
+          reject(error);
+        }
+      };
+    });
+  }
+
+  async function deleteSessionData({ tabId, sessionId } = {}) {
+    if (!Number.isInteger(tabId)) {
+      throw new TypeError('tabId must be an integer.');
+    }
+
+    if (typeof sessionId !== 'string' || !sessionId) {
+      throw new TypeError('sessionId must be a non-empty string.');
+    }
+
+    const db = await openDatabase();
+    const tx = db.transaction(
+      [SESSION_STORE, ACTIVE_SESSION_STORE, RECORD_STORE, ENTITY_STORE],
+      'readwrite'
+    );
+    const done = transactionDone(tx);
+
+    try {
+      const sessionStore = tx.objectStore(SESSION_STORE);
+      const activeStore = tx.objectStore(ACTIVE_SESSION_STORE);
+      const recordStore = tx.objectStore(RECORD_STORE);
+      const entityStore = tx.objectStore(ENTITY_STORE);
+
+      const activePointer = await requestResult(activeStore.get(tabId));
+
+      if (activePointer?.sessionId === sessionId) {
+        activeStore.delete(tabId);
+      }
+
+      sessionStore.delete(sessionId);
+
+      await Promise.all([
+        deleteByIndex(recordStore, 'bySession', sessionId),
+        deleteByIndex(entityStore, 'bySession', sessionId)
+      ]);
+    } catch (error) {
+      try { tx.abort(); } catch {}
+      try { await done; } catch {}
+      throw error;
+    }
+
+    await done;
+  }
+
   async function writeBatch({
     session = null,
     activeSession = null,
@@ -264,6 +333,7 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
       return getAllByIndex(ENTITY_STORE, 'bySession', sessionId);
     },
     writeBatch,
+    deleteSessionData,
     putEntity(entity) {
       return put(ENTITY_STORE, entity);
     },

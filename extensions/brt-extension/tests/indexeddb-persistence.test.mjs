@@ -600,3 +600,82 @@ test('writeBatch rejects an active pointer that does not reference the session h
   assert.equal(await persistence.getSession('session-a'), null);
   assert.equal(await persistence.getActiveSession(53), null);
 });
+
+test('deleteSessionData removes the target session and its evidence', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('delete-session-data')
+  });
+
+  await persistence.writeBatch({
+    session: { tabId: 61, sessionId: 'delete-me', runState: 'stopped' },
+    activeSession: { tabId: 61, sessionId: 'delete-me', updatedAt: 1 },
+    records: [
+      {
+        recordKey: 'delete-me:timeline:1',
+        sessionId: 'delete-me',
+        bucket: 'timeline',
+        sequence: 1,
+        value: { kind: 'marker' }
+      }
+    ],
+    entities: [
+      {
+        entityKey: 'delete-me:sources:1',
+        sessionId: 'delete-me',
+        bucket: 'sources',
+        value: { id: 'source-1' }
+      }
+    ]
+  });
+
+  await persistence.deleteSessionData({ tabId: 61, sessionId: 'delete-me' });
+
+  assert.equal(await persistence.getSession('delete-me'), null);
+  assert.equal(await persistence.getActiveSession(61), null);
+  assert.deepEqual(await persistence.getRecordsBySession('delete-me'), []);
+  assert.deepEqual(await persistence.getEntitiesBySession('delete-me'), []);
+});
+
+test('deleteSessionData leaves other sessions untouched', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('delete-session-isolation')
+  });
+
+  await persistence.writeBatch({
+    session: { tabId: 62, sessionId: 'target-session', runState: 'stopped' },
+    activeSession: { tabId: 62, sessionId: 'target-session', updatedAt: 1 },
+    records: [
+      { recordKey: 'target-session:timeline:1', sessionId: 'target-session', bucket: 'timeline', sequence: 1, value: {} },
+      { recordKey: 'foreign-session:timeline:1', sessionId: 'foreign-session', bucket: 'timeline', sequence: 1, value: {} }
+    ],
+    entities: [
+      { entityKey: 'target-session:sources:1', sessionId: 'target-session', bucket: 'sources', value: {} },
+      { entityKey: 'foreign-session:sources:1', sessionId: 'foreign-session', bucket: 'sources', value: {} }
+    ]
+  });
+
+  await persistence.putSession({ tabId: 99, sessionId: 'foreign-session', runState: 'stopped' });
+
+  await persistence.deleteSessionData({ tabId: 62, sessionId: 'target-session' });
+
+  assert.equal(await persistence.getSession('target-session'), null);
+  assert.equal((await persistence.getSession('foreign-session')).sessionId, 'foreign-session');
+  assert.equal((await persistence.getRecordsBySession('foreign-session')).length, 1);
+  assert.equal((await persistence.getEntitiesBySession('foreign-session')).length, 1);
+});
+
+test('deleteSessionData preserves a newer active pointer for the same tab', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('delete-stale-pointer-guard')
+  });
+
+  await persistence.putSession({ tabId: 63, sessionId: 'old-session', runState: 'stopped' });
+  await persistence.putSession({ tabId: 63, sessionId: 'new-session', runState: 'running' });
+  await persistence.putActiveSession({ tabId: 63, sessionId: 'new-session', updatedAt: 2 });
+
+  await persistence.deleteSessionData({ tabId: 63, sessionId: 'old-session' });
+
+  assert.equal(await persistence.getSession('old-session'), null);
+  assert.equal((await persistence.getSession('new-session')).sessionId, 'new-session');
+  assert.equal((await persistence.getActiveSession(63)).sessionId, 'new-session');
+});
