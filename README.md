@@ -13,7 +13,8 @@ left un-restorable.
 
 ## Project structure
 
-Browser Research Toolkit now has two complementary implementations:
+Browser Research Toolkit has two complementary runtime surfaces backed by
+shared security and evidence primitives:
 
 ### Core 4.x
 
@@ -22,7 +23,7 @@ It can be bundled as a standalone browser script or imported as a module and
 focuses on redaction-first network, DOM, storage, performance, and navigation
 observability.
 
-### BRT Extension 0.4.x
+### BRT Extension 0.5.x
 
 [`extensions/brt-extension/`](extensions/brt-extension/) is the Chrome
 Manifest V3 research environment built around the same observability-first
@@ -39,6 +40,14 @@ principles. It adds:
 The extension remains an observability and research tool. Active exploitation,
 credential interception, CAPTCHA solving, fingerprint spoofing, stealth/evasion,
 token replay, and access-control bypass are outside the public project's scope.
+
+Core and Extension share primitives from [`src/shared/`](src/shared/) where
+their semantics genuinely match. Runtime-specific orchestration and policy stay
+local where behavior differs. The standalone `ResearchCollector` remains the
+Core composition root and public compatibility layer.
+
+See [ADR-001: Keep the standalone collector as a thin composition layer](docs/architecture/ADR-001-STANDALONE-COLLECTOR.md)
+for the v0.6 architectural decision and shared/local boundary.
 
 Extension documentation:
 
@@ -60,10 +69,11 @@ each concern is now its own module with an explicit interface.
 
 ```
 src/
-  types.ts                        shared interfaces
-  config.ts                       defaults + sensitive-data patterns
-  context.ts                      shared state/services, built once, injected everywhere
-  sanitize/sanitizer.ts           all redaction logic in one place
+  shared/                         cross-runtime primitives with shared semantics
+  types.ts                        Core interfaces
+  config.ts                       Core defaults + sensitive-data patterns
+  context.ts                      Core state/services, built once, injected everywhere
+  sanitize/sanitizer.ts           Core sanitization policy built on shared primitives
   storage/bounded-store.ts        generic FIFO+TTL store (replaces duplicated rotation code)
   logging/logger.ts               console output + error history
   interceptors/                   fetch, XHR, WebSocket, beacon, EventSource, dynamic DOM resources
