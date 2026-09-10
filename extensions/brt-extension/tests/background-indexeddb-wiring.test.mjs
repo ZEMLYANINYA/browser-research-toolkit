@@ -47,27 +47,28 @@ function clearLifecycleSource() {
   return background.slice(start, end);
 }
 
-test('dual-write flush captures delta state before the first await', () => {
+test('IndexedDB flush captures delta state without rewriting the legacy session blob', () => {
   const source = flushSessionSource();
 
   const delta = source.indexOf('const deltaQueue = getSessionRecordDelta(session);');
+  const entityDelta = source.indexOf('const entityDeltaQueue = getSessionEntityDelta(session);');
   const bootstrap = source.indexOf('const bootstrap = !isIndexedDbBootstrapped(session);');
-  const legacy = source.indexOf('await sessionPersistence.save(tabId, session);');
+  const indexedDb = source.indexOf('await flushSessionToIndexedDb({');
 
   assert.ok(delta >= 0);
-  assert.ok(bootstrap > delta);
-  assert.ok(legacy > bootstrap);
+  assert.ok(entityDelta > delta);
+  assert.ok(bootstrap > entityDelta);
+  assert.ok(indexedDb > bootstrap);
+  assert.doesNotMatch(source, /sessionPersistence\.save/);
 });
 
 test('stale session is rejected before IndexedDB write', () => {
   const source = flushSessionSource();
 
-  const legacy = source.indexOf('await sessionPersistence.save(tabId, session);');
   const guard = source.indexOf('if (sessions.get(tabId)?.sessionId !== session.sessionId) {');
   const indexedDb = source.indexOf('await flushSessionToIndexedDb({');
 
-  assert.ok(legacy >= 0);
-  assert.ok(guard > legacy);
+  assert.ok(guard >= 0);
   assert.ok(indexedDb > guard);
 });
 

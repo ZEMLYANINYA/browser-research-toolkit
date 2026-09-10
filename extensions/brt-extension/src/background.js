@@ -420,7 +420,6 @@ async function flushSession(tabId) {
   state.dirty = false;
 
   const pending = (async () => {
-    let legacyOk = true;
     let indexedDbOk = true;
 
     try {
@@ -430,17 +429,9 @@ async function flushSession(tabId) {
       const entityDeltaQueue = getSessionEntityDelta(session);
       const bootstrap = !isIndexedDbBootstrapped(session);
 
-      try {
-        await sessionPersistence.save(tabId, session);
-      } catch (error) {
-        legacyOk = false;
-        diagnostic(session, 'storage-write-failed', { message: String(error?.message || error) });
-      }
-
       if (sessions.get(tabId)?.sessionId !== session.sessionId) {
         return {
           sessionId: session.sessionId,
-          legacyOk,
           indexedDbOk: false,
           stale: true
         };
@@ -463,7 +454,6 @@ async function flushSession(tabId) {
 
       return {
         sessionId: session.sessionId,
-        legacyOk,
         indexedDbOk,
         stale: false
       };
