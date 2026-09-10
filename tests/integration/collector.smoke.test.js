@@ -2,30 +2,44 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 
-function makeJsonResponse(body) {
+function makeResponse(body, contentType) {
+  const bytes = new TextEncoder().encode(body);
+
   return {
-    headers: { get: (key) => (key === 'content-type' ? 'application/json' : null) },
+    headers: {
+      get: (key) =>
+        key === 'content-type'
+          ? contentType
+          : null
+    },
     status: 200,
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      }
+    }),
     clone() {
-      return this;
+      return makeResponse(body, contentType);
     },
     async text() {
       return body;
-    },
+    }
   };
 }
 
+function makeJsonResponse(body) {
+  return makeResponse(
+    body,
+    'application/json'
+  );
+}
+
 function makeTextResponse(body) {
-  return {
-    headers: { get: (key) => (key === 'content-type' ? 'text/plain' : null) },
-    status: 200,
-    clone() {
-      return this;
-    },
-    async text() {
-      return body;
-    },
-  };
+  return makeResponse(
+    body,
+    'text/plain'
+  );
 }
 
 test('ResearchCollector captures and redacts a fetch call, DOM event, and localStorage write end-to-end', async () => {

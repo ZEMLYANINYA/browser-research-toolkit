@@ -252,3 +252,85 @@ test('ResponseAnalyzer currently loses truncation metadata when truncated JSON b
     false
   );
 });
+
+test('ResponseAnalyzer stops fetch body analysis at maxResponseBytes before the legacy character cap', async () => {
+  const ctx = new CollectorContext(
+    mergeConfig({
+      maxResponseBytes: 5,
+      maxResponseSize: 100,
+      logLevel: 'error'
+    })
+  );
+
+  const analyzer =
+    new ResponseAnalyzer(ctx);
+
+  const request =
+    makeRequest('req_byte_cap_ascii');
+
+  const response =
+    new Response(
+      'abcdefgh',
+      {
+        headers: {
+          'content-type': 'text/plain'
+        }
+      }
+    );
+
+  await analyzer.analyzeFetchResponse(
+    response,
+    request
+  );
+
+  assert.equal(
+    request.responseType,
+    'text'
+  );
+
+  assert.equal(
+    request.responseText,
+    'abcde'
+  );
+});
+
+test('ResponseAnalyzer applies maxResponseBytes as a UTF-8 byte cap', async () => {
+  const ctx = new CollectorContext(
+    mergeConfig({
+      maxResponseBytes: 6,
+      maxResponseSize: 100,
+      logLevel: 'error'
+    })
+  );
+
+  const analyzer =
+    new ResponseAnalyzer(ctx);
+
+  const request =
+    makeRequest('req_byte_cap_unicode');
+
+  const response =
+    new Response(
+      '€€€',
+      {
+        headers: {
+          'content-type': 'text/plain'
+        }
+      }
+    );
+
+  await analyzer.analyzeFetchResponse(
+    response,
+    request
+  );
+
+  assert.equal(
+    request.responseType,
+    'text'
+  );
+
+  assert.equal(
+    request.responseText,
+    '€€'
+  );
+});

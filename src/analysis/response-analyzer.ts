@@ -1,5 +1,6 @@
 import type { CollectorContext } from '../context.js';
 import type { RequestData } from '../types.js';
+import { readResponseTextBounded } from '../shared/bounded-reader.js';
 import { computeFingerprint } from './request-fingerprint.js';
 
 export class ResponseAnalyzer {
@@ -11,16 +12,33 @@ export class ResponseAnalyzer {
       requestData.contentType = contentType;
       requestData.status = response.status;
 
-      if (contentType.includes('json')) {
-        const text = await response.text();
-        const truncatedBody = text.length > this.ctx.config.maxResponseSize;
-        const body = truncatedBody ? text.slice(0, this.ctx.config.maxResponseSize) : text;
-        this.tryStoreJson(body, requestData, truncatedBody);
-      } else if (contentType.includes('text') || contentType.includes('javascript')) {
-        const text = await response.text();
-        const truncatedBody = text.length > this.ctx.config.maxResponseSize;
-        const body = truncatedBody ? text.slice(0, this.ctx.config.maxResponseSize) : text;
-        this.storeAsPlainText(body, requestData);
+      if (
+        contentType.includes('json') ||
+        contentType.includes('text') ||
+        contentType.includes('javascript')
+      ) {
+        const bounded = await readResponseTextBounded(
+          response,
+          this.ctx.config.maxResponseBytes,
+          'BRT core response cap reached'
+        );
+
+        if (bounded.unavailable) return;
+
+        const text = bounded.text;
+        const characterTruncated =
+          text.length > this.ctx.config.maxResponseSize;
+        const truncatedBody =
+          bounded.truncated || characterTruncated;
+        const body = characterTruncated
+          ? text.slice(0, this.ctx.config.maxResponseSize)
+          : text;
+
+        if (contentType.includes('json')) {
+          this.tryStoreJson(body, requestData, truncatedBody);
+        } else {
+          this.storeAsPlainText(body, requestData);
+        }
       }
     } catch (error) {
       this.ctx.logger.logError('Response Analysis Failed', error, { requestId: requestData.id });
