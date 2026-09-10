@@ -20,6 +20,7 @@ import { renderParserBlueprintMarkdown } from './parser-blueprint-markdown.js';
 import { createSessionPersistence } from './session-persistence.js';
 import { createIndexedDbPersistence } from './indexeddb-persistence.js';
 import { flushSessionToIndexedDb } from './indexeddb-session-flush.js';
+import { recoverSessionFromIndexedDb } from './indexeddb-session-recovery.js';
 import { createRecordDeltaQueue } from './record-delta-queue.js';
 import { createPersistedRecord } from './session-persistence-model.js';
 
@@ -156,8 +157,27 @@ async function loadSession(tabId) {
   if (sessionLoads.has(tabId)) return sessionLoads.get(tabId);
 
   const pending = (async () => {
-    const storedSession = await sessionPersistence.load(tabId);
-    const session = storedSession || freshSession(tabId);
+    let recovery = null;
+    let recoveryError = null;
+
+    try {
+      recovery = await recoverSessionFromIndexedDb({
+        tabId,
+        persistence: indexedDbPersistence
+      });
+    } catch (error) {
+      recoveryError = error;
+    }
+
+    const indexedDbSession = recovery?.status === 'recovered'
+      ? recovery.session
+      : null;
+
+    const legacySession = indexedDbSession
+      ? null
+      : await sessionPersistence.load(tabId);
+
+    const session = indexedDbSession || legacySession || freshSession(tabId);
     session.schemaVersion = Math.max(Number(session.schemaVersion) || 2, 4);
     session.sessionId = session.sessionId || `session_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     session.preserveSession = session.preserveSession !== false;
@@ -185,6 +205,26 @@ async function loadSession(tabId) {
     session.retention = session.retention || { timelineSeen: 0, timelineEvicted: 0, timelineDropped: 0, networkSeen: 0, networkEvicted: 0, analyticsBodiesSuppressed: 0 };
     session.suppressed = session.suppressed || { analyticsBodies: 0 };
     session.tasks = Array.isArray(session.tasks) ? session.tasks.slice(-100) : [];
+
+    if (indexedDbSession) {
+      markIndexedDbBootstrapped(session);
+      diagnostic(session, 'indexeddb-session-recovered', {
+        sessionId: session.sessionId,
+        recordCount: Array.isArray(recovery?.records) ? recovery.records.length : 0
+      });
+    } else if (recoveryError || (recovery && recovery.status !== 'missing')) {
+      const detail = {
+        status: recovery?.status || 'read-error',
+        issues: Array.isArray(recovery?.issues) ? recovery.issues : []
+      };
+
+      if (recoveryError) {
+        detail.message = String(recoveryError?.message || recoveryError);
+      }
+
+      diagnostic(session, 'indexeddb-recovery-fallback', detail);
+    }
+
     // Never trust persisted incremental counters blindly. Rebuild once from the
     // actual retained collections so stale accounting cannot trigger trim loops.
     rebuildStorageStats(session);

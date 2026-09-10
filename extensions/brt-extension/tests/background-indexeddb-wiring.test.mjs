@@ -234,3 +234,41 @@ test('CLEAR resumes persistence only after both durable stores are deleted', () 
   assert.ok(resume > fresh);
   assert.equal(source.includes('} finally {'), false);
 });
+
+test('loadSession prefers IndexedDB recovery before legacy storage', () => {
+  const start = background.indexOf('async function loadSession(tabId) {');
+  const end = background.indexOf('\nfunction getSessionRecordDelta', start);
+
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+
+  const source = background.slice(start, end);
+  const recovery = source.indexOf('await recoverSessionFromIndexedDb({');
+  const chooseIndexedDb = source.indexOf("recovery?.status === 'recovered'");
+  const legacy = source.indexOf('await sessionPersistence.load(tabId);');
+  const chooseSession = source.indexOf('const session = indexedDbSession || legacySession || freshSession(tabId);');
+
+  assert.ok(recovery >= 0);
+  assert.ok(chooseIndexedDb > recovery);
+  assert.ok(legacy > chooseIndexedDb);
+  assert.ok(chooseSession > legacy);
+  assert.match(source, /const legacySession = indexedDbSession\s*\n\s*\? null\s*\n\s*: await sessionPersistence\.load\(tabId\);/);
+});
+
+test('loadSession marks successful IndexedDB recovery and exposes broken recovery fallback', () => {
+  const start = background.indexOf('async function loadSession(tabId) {');
+  const end = background.indexOf('\nfunction getSessionRecordDelta', start);
+  const source = background.slice(start, end);
+
+  const recoveredBranch = source.indexOf('if (indexedDbSession) {');
+  const bootstrap = source.indexOf('markIndexedDbBootstrapped(session);', recoveredBranch);
+  const recoveredDiagnostic = source.indexOf("diagnostic(session, 'indexeddb-session-recovered'", bootstrap);
+  const fallbackBranch = source.indexOf("recovery.status !== 'missing'");
+  const fallbackDiagnostic = source.indexOf("diagnostic(session, 'indexeddb-recovery-fallback'", fallbackBranch);
+
+  assert.ok(recoveredBranch >= 0);
+  assert.ok(bootstrap > recoveredBranch);
+  assert.ok(recoveredDiagnostic > bootstrap);
+  assert.ok(fallbackBranch > recoveredDiagnostic);
+  assert.ok(fallbackDiagnostic > fallbackBranch);
+});
