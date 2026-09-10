@@ -1,4 +1,4 @@
-import { isExtensionSensitiveFieldName, sanitizeUrlWithPolicy, truncateText } from '../dist/shared-text.js';
+import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, sanitizeUrlWithPolicy, truncateText } from '../dist/shared-text.js';
 
 export const CHANNEL = '__BRT_LAB_V01__';
 
@@ -20,28 +20,9 @@ export const LIMITS = Object.freeze({
   maxAntiBotSignals: 500
 });
 
-export const SENSITIVE_QUERY_KEYS = new Set([
-  'key', 'token', 'apikey', 'api_key', 'secret', 'auth', 'password',
-  'access_token', 'refresh_token', 'session', 'sessionid', 'session_id', 'csrf', 'xsrf', 'code', 'signature', 'sig', 'jwt',
-  'cid', 'sid', 'visitorid', 'visitor_id', 'clientid', 'client_id', 'deviceid', 'device_id', 'trackingid', 'tracking_id',
-  'auid', 'ecid', 'gclid', 'fbclid', 'msclkid', '_ga', '_gid'
-]);
-
 const SENSITIVE_ASSIGNMENT = /\b(csrf|xsrf|access[_-]?token|refresh[_-]?token|password|passwd|secret|api[_-]?key|session(?:id)?|signature|jwt|token|visitor[_-]?id|client[_-]?id|device[_-]?id|tracking[_-]?id)\b\s*["']?\s*[:=]\s*["']?([^\s,&"'}]+)/gi;
 const AUTH_HEADER_TEXT = /\b(authorization|proxy-authorization)\b\s*["']?\s*[:=]\s*["']?[^\r\n,;&}]+/gi;
 const COOKIE_HEADER_TEXT = /\b(cookie|set-cookie)\b\s*["']?\s*[:=]\s*["']?[^\r\n}]+/gi;
-
-function normalizedKeyParts(key) {
-  return String(key || '').toLowerCase().split(/[.\[\]_-]+/).filter(Boolean);
-}
-
-export function isSensitiveQueryKey(key) {
-  const lower = String(key || '').toLowerCase();
-  if (SENSITIVE_QUERY_KEYS.has(lower)) return true;
-  const compact = lower.replace(/[^a-z0-9]/g, '');
-  if (SENSITIVE_QUERY_KEYS.has(compact)) return true;
-  return normalizedKeyParts(lower).some(part => SENSITIVE_QUERY_KEYS.has(part) || /^(visitor|client|device|tracking)id$/.test(part));
-}
 
 export function redactSensitiveText(value, maxChars = 80_000) {
   return trimText(String(value ?? '')
@@ -59,7 +40,7 @@ export function sanitizeUrl(rawUrl) {
       : location.href;
 
   return sanitizeUrlWithPolicy(rawUrl, {
-    isSensitiveQueryKey,
+    isSensitiveQueryKey: isExtensionSensitiveQueryKey,
     baseUrl,
     maxQueryValueLength: 256,
     sanitizeHash: true,
