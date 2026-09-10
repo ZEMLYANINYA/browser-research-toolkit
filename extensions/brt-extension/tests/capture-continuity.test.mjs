@@ -100,6 +100,51 @@ test('unknown document identity is ignored conservatively', () => {
   assert.equal(continuity.pageStreams.length, 0);
 });
 
+test('preexisting producer stream history is normalized to the bound', () => {
+  const continuity = {
+    pageStreams: Array.from({ length: MAX_PAGE_CONTINUITY_STREAMS + 10 }, (_, index) => ({
+      streamKey: `old-${index}`,
+      generation: 1,
+      runId: 'old-run',
+      documentId: `old-doc-${index}`,
+      frameId: 0,
+      lastProducerSequence: 1,
+      updatedAt: index + 1
+    }))
+  };
+
+  const result = observe(continuity, 1);
+
+  assert.equal(continuity.pageStreams.length, MAX_PAGE_CONTINUITY_STREAMS);
+  assert.ok(Array.isArray(result.evicted));
+  assert.equal(result.evicted.length, 11);
+  assert.equal(
+    continuity.pageStreams.some(item => item.streamKey === 'old-0'),
+    false
+  );
+});
+test('normalization reports evictions when the observed stream already exists', () => {
+  const continuity = {
+    pageStreams: Array.from({ length: MAX_PAGE_CONTINUITY_STREAMS + 10 }, (_, index) => ({
+      streamKey: index === MAX_PAGE_CONTINUITY_STREAMS + 9
+        ? JSON.stringify([7, 'run-live', 'doc-a', 0])
+        : `old-${index}`,
+      generation: index === MAX_PAGE_CONTINUITY_STREAMS + 9 ? 7 : 1,
+      runId: index === MAX_PAGE_CONTINUITY_STREAMS + 9 ? 'run-live' : 'old-run',
+      documentId: index === MAX_PAGE_CONTINUITY_STREAMS + 9 ? 'doc-a' : `old-doc-${index}`,
+      frameId: 0,
+      lastProducerSequence: index === MAX_PAGE_CONTINUITY_STREAMS + 9 ? 1 : 1,
+      updatedAt: index + 1
+    }))
+  };
+
+  const result = observe(continuity, 2, { observedAt: 1000 });
+
+  assert.equal(result.status, 'advanced');
+  assert.equal(result.gap, null);
+  assert.equal(result.evicted.length, 10);
+  assert.equal(continuity.pageStreams.length, MAX_PAGE_CONTINUITY_STREAMS);
+});
 test('producer stream history remains bounded', () => {
   const continuity = { pageStreams: [] };
 

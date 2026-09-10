@@ -261,6 +261,33 @@ test('removed-tab cleanup cancels persistence timers before dropping flush state
   assert.ok(retryTimer > normalTimer);
   assert.ok(deleteState > retryTimer);
 });
+test('page producer continuity is preserved alongside canonical session ordering', () => {
+  assert.match(background, /observePageProducerSequence/);
+  assert.match(background, /continuity: \{ pageStreams: \[\] \}/);
+
+  const start = background.indexOf('async function handlePageEvent(tabId, payload, senderContext = {}) {');
+  const end = background.indexOf('async function activeTab()', start);
+
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+
+  const source = background.slice(start, end);
+
+  assert.match(source, /const producerSequence = pageObservable/);
+  assert.match(source, /payload\.sequence > 0/);
+  assert.match(source, /observePageProducerSequence\(\{/);
+  assert.match(source, /continuity: session\.continuity/);
+  assert.match(source, /documentId: canonicalDocumentId/);
+  assert.match(source, /frameId: canonicalFrameId/);
+  assert.match(source, /producerSequence,/);
+  assert.match(source, /diagnostic\(session, 'page-producer-sequence-gap', continuity\.gap\)/);
+  assert.match(source, /diagnostic\(session, 'page-continuity-cursor-evicted'/);
+
+  const producerField = source.indexOf('producerSequence,');
+  const canonicalField = source.indexOf('sequence: canonicalSequence', producerField);
+  assert.ok(producerField >= 0);
+  assert.ok(canonicalField > producerField);
+});
 test('flush suspension blocks direct and scheduled persistence', () => {
   const flushStart = background.indexOf('async function flushSession(tabId) {');
   const flushEnd = background.indexOf('async function settleFlushBeforeLifecycle', flushStart);

@@ -25,6 +25,7 @@ import { createRecordDeltaQueue } from './record-delta-queue.js';
 import { createEntityDeltaQueue } from './entity-delta-queue.js';
 import { createPersistedRecord } from './session-persistence-model.js';
 import { createPersistedEntity, sourceEntityKey } from './session-entity-model.js';
+import { observePageProducerSequence } from './capture-continuity.js';
 
 const sessions = new Map();
 const cdpTabs = new Set();
@@ -117,6 +118,7 @@ function freshSession(tabId) {
     stopRequested: false,
     generation: 0,
     sequence: 0,
+    continuity: { pageStreams: [] },
     tabId,
     preserveSession: true,
     requestedMode: 'standard',
@@ -1280,10 +1282,43 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
   session.updatedAt = Date.now();
   const canonicalSequence = ++session.sequence;
   antiBotAnalysisCache.delete(tabId);
+
   const canonicalDocumentId = resolveCanonicalDocumentId(payload, senderContext.documentId);
+  const canonicalFrameId = senderContext.frameId ?? payload.frameId ?? 0;
+  const producerSequence = pageObservable
+    && Number.isInteger(payload.sequence)
+    && payload.sequence > 0
+    ? payload.sequence
+    : null;
+
+  if (producerSequence != null) {
+    const continuity = observePageProducerSequence({
+      continuity: session.continuity,
+      generation: payload.generation,
+      runId: payload.runId,
+      documentId: canonicalDocumentId,
+      frameId: canonicalFrameId,
+      producerSequence,
+      observedAt: session.updatedAt
+    });
+
+    session.continuity = continuity.state;
+
+    if (continuity.gap) {
+      diagnostic(session, 'page-producer-sequence-gap', continuity.gap);
+    }
+
+    if (continuity.evicted?.length) {
+      diagnostic(session, 'page-continuity-cursor-evicted', {
+        count: continuity.evicted.length
+      });
+    }
+  }
+
   const canonical = {
     ...payload,
     eventId: payload.eventId || `evt_${Date.now().toString(36)}_${canonicalSequence}`,
+    producerSequence,
     sequence: canonicalSequence,
     sessionId: session.sessionId,
     source: payload.source || 'page-agent',
@@ -1293,7 +1328,7 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
       integrity: 'unknown'
     },
     documentId: canonicalDocumentId,
-    frameId: senderContext.frameId ?? payload.frameId ?? 0
+    frameId: canonicalFrameId
   };
 
   const senderObservedUrl = sanitizeUrl(senderContext.url || '');
