@@ -1,5 +1,6 @@
 import { SENSITIVE_PATTERNS } from '../config.js';
 import { truncateText } from '../shared/text.js';
+import { sanitizeUrlWithPolicy } from '../shared/url.js';
 import type { ResearchConfig } from '../types.js';
 
 const REDACTED_QUERY_PARAMS = ['key', 'token', 'apikey', 'api_key', 'secret', 'auth', 'password'];
@@ -22,19 +23,16 @@ export class Sanitizer {
   sanitizeUrl(url: string): string {
     if (!this.config.redactSensitive) return url;
 
-    try {
-      const urlObj = new URL(url, typeof window !== 'undefined' ? window.location.href : undefined);
-      const redactedParamsLower = REDACTED_QUERY_PARAMS.map((p) => p.toLowerCase());
+    const redactedParamsLower = REDACTED_QUERY_PARAMS.map((p) => p.toLowerCase());
 
-      for (const param of Array.from(urlObj.searchParams.keys())) {
-        if (redactedParamsLower.includes(param.toLowerCase())) {
-          urlObj.searchParams.set(param, '[REDACTED]');
-        }
-      }
-      return urlObj.toString();
-    } catch {
-      return url;
-    }
+    return sanitizeUrlWithPolicy(url, {
+      isSensitiveQueryKey: (key) =>
+        redactedParamsLower.includes(key.toLowerCase()),
+      baseUrl:
+        typeof window !== 'undefined'
+          ? window.location.href
+          : undefined
+    });
   }
 
   sanitizeHeaders(headers: HeadersInit | undefined): Record<string, string> | undefined {
