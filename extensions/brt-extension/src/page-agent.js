@@ -1,6 +1,6 @@
 import { truncateText } from '../../../src/shared/text.ts';
 import { sanitizeUrlWithPolicy } from '../../../src/shared/url.ts';
-import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey } from '../../../src/shared/sensitivity.ts';
+import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, redactExtensionSensitiveText } from '../../../src/shared/sensitivity.ts';
 
 (() => {
   const CHANNEL = '__BRT_LAB_V01__';
@@ -22,9 +22,6 @@ import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey } from '../
     'verify', 'verification', 'webdriver', 'headless', 'fingerprint', 'managed-challenge'
   ];
 
-  const SENSITIVE_BODY = /\b(csrf|xsrf|access[_-]?token|refresh[_-]?token|password|passwd|secret|api[_-]?key|session(?:id)?|signature|jwt|token|visitor[_-]?id|client[_-]?id|device[_-]?id|tracking[_-]?id)\b\s*["']?\s*[:=]\s*["']?([^\s,&"'}]+)/gi;
-  const AUTH_HEADER_TEXT = /\b(authorization|proxy-authorization)\b\s*["']?\s*[:=]\s*["']?[^\r\n,;&}]+/gi;
-  const COOKIE_HEADER_TEXT = /\b(cookie|set-cookie)\b\s*["']?\s*[:=]\s*["']?[^\r\n}]+/gi;
 
   const state = {
     active: false,
@@ -69,10 +66,7 @@ import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey } from '../
     return truncateText(text, max, '\n/* …truncated… */');
   };
 
-  const redactSensitiveText = (value, max = LIMITS.maxResponseChars) => trim(String(value ?? '')
-    .replace(AUTH_HEADER_TEXT, '$1=[REDACTED]')
-    .replace(COOKIE_HEADER_TEXT, '$1=[REDACTED]')
-    .replace(SENSITIVE_BODY, '$1=[REDACTED]'), max);
+  const redactSensitiveText = (value, max = LIMITS.maxResponseChars) => trim(redactExtensionSensitiveText(value), max);
 
   function visibleCookieNames() {
     try {
