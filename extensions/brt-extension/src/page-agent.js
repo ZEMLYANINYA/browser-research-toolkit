@@ -1,6 +1,7 @@
 import { truncateText } from '../../../src/shared/text.ts';
 import { sanitizeUrlWithPolicy } from '../../../src/shared/url.ts';
 import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, redactExtensionSensitiveText } from '../../../src/shared/sensitivity.ts';
+import { readResponseTextBounded } from '../../../src/shared/bounded-reader.ts';
 
 (() => {
   const CHANNEL = '__BRT_LAB_V01__';
@@ -172,40 +173,6 @@ import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, redactExte
     return redactSensitiveText(bounded, LIMITS.maxResponseChars);
   };
 
-  async function readResponseTextBounded(response, maxBytes) {
-    const reader = response?.body?.getReader?.();
-    if (!reader) return { text: '', bytesRead: 0, truncated: false, unavailable: true };
-    const decoder = new TextDecoder();
-    let text = '';
-    let bytesRead = 0;
-    let truncated = false;
-    try {
-      while (bytesRead < maxBytes) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        const remaining = maxBytes - bytesRead;
-        if (value.byteLength > remaining) {
-          text += decoder.decode(value.subarray(0, remaining), { stream: true });
-          bytesRead += remaining;
-          truncated = true;
-          await reader.cancel('BRT body cap reached').catch(() => {});
-          break;
-        }
-        text += decoder.decode(value, { stream: true });
-        bytesRead += value.byteLength;
-      }
-      text += decoder.decode();
-      if (bytesRead >= maxBytes && !truncated) {
-        truncated = true;
-        await reader.cancel('BRT body cap reached').catch(() => {});
-      }
-      return { text, bytesRead, truncated, unavailable: false };
-    } finally {
-      try { reader.releaseLock?.(); } catch {}
-    }
-  }
-
   const describeTarget = (node) => {
     if (!(node instanceof Element)) return { node: node?.nodeName || 'unknown' };
     const tag = node.tagName.toLowerCase();
@@ -273,7 +240,7 @@ import { isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, redactExte
           const contentType = response.headers?.get?.('content-type') || '';
           if (state.captureMode !== 'light' && /json|text|javascript|xml|html|graphql/i.test(contentType)) {
             const clone = response.clone();
-            readResponseTextBounded(clone, LIMITS.maxResponseBytes).then(result => {
+            readResponseTextBounded(clone, LIMITS.maxResponseBytes, 'BRT body cap reached').then(result => {
               if (!state.active || capturedGeneration !== state.generation || result.unavailable) return;
               emit('network-body', {
                 requestId,
