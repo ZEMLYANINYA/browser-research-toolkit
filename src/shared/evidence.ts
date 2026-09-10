@@ -33,9 +33,12 @@ export interface PageEventEnvelope {
   generation: number;
   runId: string;
   wallTime: number;
-  eventId?: string;
-  documentId?: string;
-  data?: Record<string, unknown>;
+  monotonicTime?: number | null;
+  performanceTimeOrigin?: number | null;
+  eventId?: string | null;
+  documentId?: string | null;
+  frameId?: number | null;
+  data?: Record<string, unknown> | null;
 }
 
 export type PageEventValidationResult =
