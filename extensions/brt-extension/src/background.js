@@ -449,7 +449,24 @@ async function flushSession(tabId) {
         if (bootstrap && sessions.get(tabId)?.sessionId === session.sessionId) markIndexedDbBootstrapped(session);
       } catch (error) {
         indexedDbOk = false;
-        diagnostic(session, 'indexeddb-write-failed', { message: String(error?.message || error) });
+
+        const message = String(error?.message || error);
+
+        diagnostic(session, 'indexeddb-write-failed', { message });
+
+        /*
+         * Incremental continuity is no longer trustworthy after a failed
+         * durable write. Discard accumulated mutation deltas and force
+         * the next write to bootstrap from the current bounded RAM truth.
+         */
+        resetRecordDelta(tabId);
+        resetEntityDelta(tabId);
+        resetIndexedDbBootstrap(tabId);
+
+        diagnostic(session, 'indexeddb-rebase-required', {
+          message,
+          sessionId: session.sessionId
+        });
       }
 
       return {

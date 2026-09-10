@@ -72,6 +72,23 @@ test('stale session is rejected before IndexedDB write', () => {
   assert.ok(indexedDb > guard);
 });
 
+test('failed IndexedDB writes force a bounded session rebase', () => {
+  const source = flushSessionSource();
+
+  const catchStart = source.indexOf('} catch (error) {', source.indexOf('await flushSessionToIndexedDb({'));
+  const failureDiagnostic = source.indexOf("diagnostic(session, 'indexeddb-write-failed'", catchStart);
+  const resetRecords = source.indexOf('resetRecordDelta(tabId);', failureDiagnostic);
+  const resetEntities = source.indexOf('resetEntityDelta(tabId);', resetRecords);
+  const resetBootstrap = source.indexOf('resetIndexedDbBootstrap(tabId);', resetEntities);
+  const rebaseDiagnostic = source.indexOf("diagnostic(session, 'indexeddb-rebase-required'", resetBootstrap);
+
+  assert.ok(catchStart >= 0);
+  assert.ok(failureDiagnostic > catchStart);
+  assert.ok(resetRecords > failureDiagnostic);
+  assert.ok(resetEntities > resetRecords);
+  assert.ok(resetBootstrap > resetEntities);
+  assert.ok(rebaseDiagnostic > resetBootstrap);
+});
 test('session export flushes before reading the durable IndexedDB snapshot', () => {
   const start = background.indexOf("if (message?.type === 'BRT_EXPORT_SESSION') {");
   const end = background.indexOf("if (message?.type === 'BRT_GET_PARSER_BLUEPRINT') {", start);
