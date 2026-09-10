@@ -401,10 +401,49 @@ Evidence provenance should be considered when interpreting confidence.
 
 ## Storage lifecycle
 
-The service worker keeps hot session state in memory and persists sessions in `chrome.storage.local` through a serialized flush
-state. Multiple updates coalesce rather than running unbounded parallel writes.
+The service worker keeps the hot session model in memory, while IndexedDB v2 is the primary durable persistence layer.
+Persistence is decomposed so high-volume evidence does not require rewriting one large serialized session object on every flush:
 
-Closing a tab clears in-memory state and tasks but intentionally does not silently delete the persisted research log.
+```text
+hot session state
+      |
+      +--> session header
+      |
+      +--> append-oriented timeline/network records
+      |
+      +--> mutable source/html/runtime entities
+      |
+      `--> active-session pointer
+                 |
+                 v
+             IndexedDB v2
+```
+
+Timeline and network evidence use stable session/bucket/sequence record identities. Source entries use stable source identities,
+while HTML and runtime snapshots use singleton entity identities. Record and entity delta queues retain only pending mutations
+between flushes, and a serialized flush state prevents overlapping persistence writes.
+
+The session header, active-session pointer, record mutations, and entity mutations are committed through the IndexedDB write
+batch boundary. Initial/bootstrap persistence can replace retained records and entities for the current session; ordinary hot
+flushes persist only drained mutations plus the current bounded session header.
+
+A failed IndexedDB write does not silently continue from an uncertain delta state. The service worker marks the session for a
+bounded rebase from canonical in-memory state and schedules a session-scoped retry budget. Persistent failure remains visible
+through diagnostics rather than creating an unbounded retry loop.
+
+Service-worker recovery begins from the active-session pointer, restores the session header, then hydrates persisted records and
+entities. Page-observable events retain both canonical session ordering and their page-producer sequence. A recovered producer
+cursor can therefore report an observable sequence gap without treating normal gaps in the global canonical sequence as data loss.
+
+Session export first drains current persistence work and then reconstructs the exported session from durable IndexedDB state.
+`chrome.storage.local` remains only as a legacy fallback/migration source and cleanup target; it is not the hot session-write path.
+
+Tab close performs a best-effort immediate persistence finalization before in-memory state is discarded. Manifest V3 may still
+terminate a worker during asynchronous shutdown, so this is not described as lossless. Previously durable state remains
+recoverable, and continuity diagnostics make observable producer gaps explicit.
+
+Persisted research data is not silently deleted merely because the side panel closes or the tab lifecycle ends. Explicit CLEAR
+removes the current durable session data transactionally.
 
 ## Extension boundaries
 

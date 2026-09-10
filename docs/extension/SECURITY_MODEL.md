@@ -139,8 +139,28 @@ BRT has no project-operated telemetry backend. It does not intentionally transmi
 Data paths are:
 
 ```text
-captured page -> local extension state -> chrome.storage.local -> user-triggered export
+captured page
+     |
+     v
+bounded/redacted extension state
+     |
+     v
+IndexedDB v2
+  |- session header
+  |- timeline/network records
+  |- source/html/runtime entities
+  `- active-session pointer
+     |
+     v
+durable reconstruction -> user-triggered export
 ```
+
+`chrome.storage.local` is not the primary hot persistence path. It remains only for legacy-session fallback/migration
+compatibility and related cleanup.
+
+IndexedDB persistence is bounded and failure-visible. Failed writes trigger rebase/retry diagnostics rather than silent loss,
+and page-producer sequence continuity can expose observable gaps across a service-worker lifecycle interruption. These
+diagnostics do not claim that every missing producer sequence has a known cause.
 
 A captured page naturally continues making its own normal network requests. BRT's source-indexing fetches are separate
 extension-origin work and are governed by the source policy above.

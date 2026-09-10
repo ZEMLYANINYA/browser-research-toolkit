@@ -1,5 +1,35 @@
 # Extension changelog
 
+## 0.6.0 - Unreleased
+
+### Added
+
+- IndexedDB v2 durable session persistence with session headers, active-session pointers, append-oriented timeline/network records, and mutable source/HTML/runtime entities.
+- IndexedDB recovery that reconstructs the current session from durable header, record, and entity state after a service-worker restart.
+- Page-producer continuity tracking that preserves producer sequence independently from canonical session ordering and reports observable sequence gaps after recovery.
+- Bounded IndexedDB retry/rebase handling with explicit persistence diagnostics.
+
+### Changed
+
+- Removed whole-session `chrome.storage.local` writes from the hot flush path; legacy storage remains only for fallback/migration compatibility and cleanup.
+- Session export now drains pending persistence work and reconstructs the exported session from durable IndexedDB state.
+- Session START, IMPORT, STOP, CLEAR, and tab-close lifecycle paths now coordinate explicitly with durable persistence.
+- Bulk source, HTML, and runtime state is persisted independently from the bounded session header instead of requiring full session rewrites.
+
+### Reliability
+
+- Failed IndexedDB writes force a bounded canonical-state rebase instead of continuing from an uncertain mutation delta.
+- Tab removal performs best-effort persistence finalization before dropping in-memory session state.
+- Producer-continuity cursor eviction is bounded and surfaced through diagnostics rather than being silent.
+- Service-worker recovery records an explicit recovery diagnostic and preserves observable producer-gap evidence through durable export.
+
+### Tests
+
+- Added IndexedDB schema, atomic write, replacement, deletion, migration, flush, recovery, and lifecycle regression coverage.
+- Added record/entity delta-queue ordering, tombstone, requeue, and failure tests.
+- Added a service-worker recovery fixture covering START -> events -> lifecycle break -> recovery -> producer gap -> STOP -> EXPORT.
+- Added producer-continuity tests for independent streams, gaps, duplicate/out-of-order events, bounded history, and cursor eviction.
+
 ## 0.5.0 - 2026-09-01
 
 ### Added
