@@ -158,6 +158,34 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
       };
     });
   }
+
+  function replaceEntitiesForSession(store, sessionId, entities) {
+    return new Promise((resolve, reject) => {
+      const request = store.index('bySession').openCursor(sessionId);
+
+      request.onerror = () => {
+        reject(request.error || new Error('IndexedDB session entity replacement failed.'));
+      };
+
+      request.onsuccess = () => {
+        try {
+          const cursor = request.result;
+
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+            return;
+          }
+
+          for (const entity of entities) store.put(entity);
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      };
+    });
+  }
+
   function deleteByIndex(store, indexName, query) {
     return new Promise((resolve, reject) => {
       const request = store.index(indexName).openCursor(query);
@@ -234,7 +262,8 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
     recordDeletes = [],
     entities = [],
     entityDeletes = [],
-    replaceRecordSessionId = null
+    replaceRecordSessionId = null,
+    replaceEntitySessionId = null
   } = {}) {
     if (
       session &&
@@ -250,7 +279,7 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
     if (session) storeNames.push(SESSION_STORE);
     if (activeSession) storeNames.push(ACTIVE_SESSION_STORE);
     if (records.length || recordDeletes.length || replaceRecordSessionId) storeNames.push(RECORD_STORE);
-    if (entities.length || entityDeletes.length) storeNames.push(ENTITY_STORE);
+    if (entities.length || entityDeletes.length || replaceEntitySessionId) storeNames.push(ENTITY_STORE);
 
     if (!storeNames.length) return;
 
@@ -283,10 +312,21 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
         }
       }
 
-      if (entities.length || entityDeletes.length) {
+      if (entities.length || entityDeletes.length || replaceEntitySessionId) {
         const store = tx.objectStore(ENTITY_STORE);
-        for (const entity of entities) store.put(entity);
-        for (const entityKey of entityDeletes) store.delete(entityKey);
+
+        if (replaceEntitySessionId) {
+          for (const entity of entities) {
+            if (entity?.sessionId !== replaceEntitySessionId) {
+              throw new TypeError('Replacement entities must belong to replaceEntitySessionId.');
+            }
+          }
+
+          await replaceEntitiesForSession(store, replaceEntitySessionId, entities);
+        } else {
+          for (const entity of entities) store.put(entity);
+          for (const entityKey of entityDeletes) store.delete(entityKey);
+        }
       }
     } catch (error) {
       try {

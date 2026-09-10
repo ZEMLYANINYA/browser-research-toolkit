@@ -731,3 +731,72 @@ test('writeBatch applies entity puts and deletes in one transaction', async () =
   assert.equal(await persistence.getEntity(oldEntity.entityKey), null);
   assert.deepEqual(await persistence.getEntity(newEntity.entityKey), newEntity);
 });
+
+test('writeBatch replacement removes stale entities from the same session', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('replace-session-entities')
+  });
+
+  await persistence.putEntity({
+    entityKey: 'target-session:source:stale',
+    sessionId: 'target-session',
+    bucket: 'source',
+    value: { id: 'stale' }
+  });
+
+  const retained = {
+    entityKey: 'target-session:source:retained',
+    sessionId: 'target-session',
+    bucket: 'source',
+    value: { id: 'retained' }
+  };
+
+  await persistence.writeBatch({
+    entities: [retained],
+    replaceEntitySessionId: 'target-session'
+  });
+
+  const entities = await persistence.getEntitiesBySession('target-session');
+  assert.deepEqual(entities.map(item => item.entityKey), [retained.entityKey]);
+});
+
+test('writeBatch entity replacement leaves foreign sessions untouched', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('replace-session-entity-isolation')
+  });
+
+  const foreign = {
+    entityKey: 'foreign-session:source:foreign',
+    sessionId: 'foreign-session',
+    bucket: 'source',
+    value: { id: 'foreign' }
+  };
+
+  await persistence.putEntity(foreign);
+
+  await persistence.writeBatch({
+    entities: [],
+    replaceEntitySessionId: 'target-session'
+  });
+
+  assert.deepEqual(await persistence.getEntity(foreign.entityKey), foreign);
+});
+
+test('writeBatch rejects foreign entities during session replacement', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('replace-session-foreign-entity')
+  });
+
+  await assert.rejects(
+    persistence.writeBatch({
+      entities: [{
+        entityKey: 'foreign-session:source:foreign',
+        sessionId: 'foreign-session',
+        bucket: 'source',
+        value: { id: 'foreign' }
+      }],
+      replaceEntitySessionId: 'target-session'
+    }),
+    /Replacement entities must belong to replaceEntitySessionId/
+  );
+});

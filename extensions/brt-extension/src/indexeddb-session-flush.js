@@ -1,8 +1,10 @@
 import { decomposeSession } from './session-persistence-model.js';
+import { decomposeSessionEntities } from './session-entity-model.js';
 
 export async function flushSessionToIndexedDb({
   session,
   deltaQueue,
+  entityDeltaQueue,
   persistence,
   bootstrap = false
 } = {}) {
@@ -12,6 +14,10 @@ export async function flushSessionToIndexedDb({
 
   if (!deltaQueue || typeof deltaQueue.drain !== 'function' || typeof deltaQueue.requeue !== 'function') {
     throw new TypeError('deltaQueue with drain/requeue is required.');
+  }
+
+  if (!entityDeltaQueue || typeof entityDeltaQueue.drain !== 'function' || typeof entityDeltaQueue.requeue !== 'function') {
+    throw new TypeError('entityDeltaQueue with drain/requeue is required.');
   }
 
   if (!persistence || typeof persistence.writeBatch !== 'function') {
@@ -25,8 +31,11 @@ export async function flushSessionToIndexedDb({
   };
 
   const batch = deltaQueue.drain();
-  const { header, records: retainedRecords } = decomposeSession(session);
+  const entityBatch = entityDeltaQueue.drain();
+  const { header: recordHeader, records: retainedRecords } = decomposeSession(session);
+  const { header, entities: retainedEntities } = decomposeSessionEntities(recordHeader);
   const records = bootstrap ? retainedRecords : batch.puts;
+  const entities = bootstrap ? retainedEntities : entityBatch.puts;
 
   try {
     await persistence.writeBatch({
@@ -34,16 +43,22 @@ export async function flushSessionToIndexedDb({
       activeSession,
       records,
       recordDeletes: bootstrap ? [] : batch.deletes,
-      replaceRecordSessionId: bootstrap ? session.sessionId : null
+      entities,
+      entityDeletes: bootstrap ? [] : entityBatch.deletes,
+      replaceRecordSessionId: bootstrap ? session.sessionId : null,
+      replaceEntitySessionId: bootstrap ? session.sessionId : null
     });
   } catch (error) {
     deltaQueue.requeue(batch);
+    entityDeltaQueue.requeue(entityBatch);
     throw error;
   }
 
   return {
     bootstrap: Boolean(bootstrap),
     recordsWritten: records.length,
-    recordsDeleted: batch.deletes.length
+    recordsDeleted: batch.deletes.length,
+    entitiesWritten: entities.length,
+    entitiesDeleted: entityBatch.deletes.length
   };
 }
