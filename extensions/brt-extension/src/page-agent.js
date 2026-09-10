@@ -1,5 +1,6 @@
 import { truncateText } from '../../../src/shared/text.ts';
 import { sanitizeUrlWithPolicy } from '../../../src/shared/url.ts';
+import { isExtensionSensitiveFieldName } from '../../../src/shared/sensitivity.ts';
 
 (() => {
   const CHANNEL = '__BRT_LAB_V01__';
@@ -27,7 +28,6 @@ import { sanitizeUrlWithPolicy } from '../../../src/shared/url.ts';
     'cid', 'sid', 'visitorid', 'visitor_id', 'clientid', 'client_id', 'deviceid', 'device_id', 'trackingid', 'tracking_id',
     'auid', 'ecid', 'gclid', 'fbclid', 'msclkid', '_ga', '_gid'
   ]);
-  const SENSITIVE_FIELD = /^(authorization|proxy-authorization|cookie|set-cookie|x-csrf.*|x-xsrf.*|.*(?:token|secret|password|passwd|apikey|api_key|access_token|refresh_token|session|signature|jwt|visitor[_-]?id|client[_-]?id|device[_-]?id|tracking[_-]?id).*)$/i;
   const SENSITIVE_BODY = /\b(csrf|xsrf|access[_-]?token|refresh[_-]?token|password|passwd|secret|api[_-]?key|session(?:id)?|signature|jwt|token|visitor[_-]?id|client[_-]?id|device[_-]?id|tracking[_-]?id)\b\s*["']?\s*[:=]\s*["']?([^\s,&"'}]+)/gi;
   const AUTH_HEADER_TEXT = /\b(authorization|proxy-authorization)\b\s*["']?\s*[:=]\s*["']?[^\r\n,;&}]+/gi;
   const COOKIE_HEADER_TEXT = /\b(cookie|set-cookie)\b\s*["']?\s*[:=]\s*["']?[^\r\n}]+/gi;
@@ -171,7 +171,7 @@ import { sanitizeUrlWithPolicy } from '../../../src/shared/url.ts';
       };
       if (Array.isArray(value)) return keys.map(key => sanitizeObject(read(key), depth + 1, seen));
       const out = {};
-      for (const key of keys) out[key] = SENSITIVE_FIELD.test(key) ? '[REDACTED]' : sanitizeObject(read(key), depth + 1, seen);
+      for (const key of keys) out[key] = isExtensionSensitiveFieldName(key) ? '[REDACTED]' : sanitizeObject(read(key), depth + 1, seen);
       return out;
     } finally {
       seen.delete(value);
@@ -238,7 +238,7 @@ import { sanitizeUrlWithPolicy } from '../../../src/shared/url.ts';
       selectorHint: trim(`${tag}${id}${classes}`, 300),
       role: role ? redactSensitiveText(role, 100) : null,
       type: type ? redactSensitiveText(type, 100) : null,
-      name: name && !SENSITIVE_FIELD.test(name) ? redactSensitiveText(name, 100) : null
+      name: name && !isExtensionSensitiveFieldName(name) ? redactSensitiveText(name, 100) : null
     };
   };
 
@@ -330,7 +330,7 @@ import { sanitizeUrlWithPolicy } from '../../../src/shared/url.ts';
 
     proto.setRequestHeader = function(name, value) {
       const meta = state.xhrMeta.get(this);
-      if (meta) meta.headers[String(name)] = SENSITIVE_FIELD.test(String(name)) ? '[REDACTED]' : trim(String(value), 500);
+      if (meta) meta.headers[String(name)] = isExtensionSensitiveFieldName(String(name)) ? '[REDACTED]' : trim(String(value), 500);
       return Reflect.apply(state.originals.xhrSetRequestHeader, this, arguments);
     };
 
@@ -804,7 +804,7 @@ import { sanitizeUrlWithPolicy } from '../../../src/shared/url.ts';
     const entries = [];
     const keys = Reflect.ownKeys(window).filter(key => typeof key === 'string').slice(0, LIMITS.maxRuntimeEntries);
     for (const key of keys) {
-      if (SENSITIVE_FIELD.test(key)) continue;
+      if (isExtensionSensitiveFieldName(key)) continue;
       let value;
       let descriptor;
       try { descriptor = Object.getOwnPropertyDescriptor(window, key); } catch { continue; }
@@ -826,7 +826,7 @@ import { sanitizeUrlWithPolicy } from '../../../src/shared/url.ts';
       if (Array.isArray(value)) return value.slice(0, 50).map(item => snapshotWithoutGetters(item, depth + 1, seen));
       const out = {};
       for (const key of Reflect.ownKeys(value).filter(key => typeof key === 'string').slice(0, 100)) {
-        if (SENSITIVE_FIELD.test(key)) { out[key] = '[REDACTED]'; continue; }
+        if (isExtensionSensitiveFieldName(key)) { out[key] = '[REDACTED]'; continue; }
         let descriptor;
         try { descriptor = Object.getOwnPropertyDescriptor(value, key); } catch { continue; }
         if (!descriptor) continue;
