@@ -1,4 +1,4 @@
-import { truncateText } from '../dist/shared-text.js';
+import { sanitizeUrlWithPolicy, truncateText } from '../dist/shared-text.js';
 
 export const CHANNEL = '__BRT_LAB_V01__';
 
@@ -54,37 +54,20 @@ export function redactSensitiveText(value, maxChars = 80_000) {
 
 export function sanitizeUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return rawUrl ?? '';
-  try {
-    const baseUrl = typeof location === 'undefined' ? undefined : location.href;
-    const url = new URL(rawUrl, baseUrl);
-    for (const key of [...url.searchParams.keys()]) {
-      const value = url.searchParams.get(key) || '';
-      if (isSensitiveQueryKey(key)) {
-        url.searchParams.set(key, '[REDACTED]');
-      } else if (value.length > 256) {
-        url.searchParams.set(key, `[TRUNCATED:${value.length}]`);
-      }
-    }
-    if (url.hash) {
-      const hash = url.hash.slice(1);
-      const params = new URLSearchParams(hash);
-      let changed = false;
-      for (const key of [...params.keys()]) {
-        if (isSensitiveQueryKey(key)) {
-          params.set(key, '[REDACTED]');
-          changed = true;
-        }
-      }
-      // Opaque fragments can carry credentials/session material and are not
-      // required for BRT's endpoint identity. Preserve only sanitized params.
-      url.hash = changed ? params.toString() : '[REDACTED]';
-    }
-    return url.toString();
-  } catch {
-    // Fail closed. Malformed URLs must never echo raw page-controlled text into
-    // an export because the parser failure may be caused by secret-bearing data.
-    return '[UNPARSEABLE_URL_REDACTED]';
-  }
+
+  const baseUrl =
+    typeof location === 'undefined'
+      ? undefined
+      : location.href;
+
+  return sanitizeUrlWithPolicy(rawUrl, {
+    isSensitiveQueryKey,
+    baseUrl,
+    maxQueryValueLength: 256,
+    sanitizeHash: true,
+    redactOpaqueHash: true,
+    malformedResult: '[UNPARSEABLE_URL_REDACTED]'
+  });
 }
 
 export function trimText(value, maxChars) {
