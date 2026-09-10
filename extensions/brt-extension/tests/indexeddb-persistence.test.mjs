@@ -227,3 +227,62 @@ test('writeBatch rolls back earlier writes when a later write fails', async () =
     null
   );
 });
+
+test('writeBatch deletes persisted records by recordKey', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('record-delete')
+  });
+
+  const record = {
+    recordKey: 'delete-session:timeline:1',
+    sessionId: 'delete-session',
+    bucket: 'timeline',
+    sequence: 1,
+    value: { kind: 'click' }
+  };
+
+  await persistence.putRecord(record);
+  assert.deepEqual(await persistence.getRecord(record.recordKey), record);
+
+  await persistence.writeBatch({
+    recordDeletes: [record.recordKey]
+  });
+
+  assert.equal(await persistence.getRecord(record.recordKey), null);
+});
+
+test('writeBatch commits record puts deletes and session header together', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('mixed-record-batch')
+  });
+
+  await persistence.putRecord({
+    recordKey: 'mixed-session:timeline:1',
+    sessionId: 'mixed-session',
+    bucket: 'timeline',
+    sequence: 1,
+    value: { kind: 'old' }
+  });
+
+  await persistence.writeBatch({
+    session: {
+      tabId: 31,
+      sessionId: 'mixed-session',
+      runState: 'running'
+    },
+    records: [
+      {
+        recordKey: 'mixed-session:timeline:2',
+        sessionId: 'mixed-session',
+        bucket: 'timeline',
+        sequence: 2,
+        value: { kind: 'new' }
+      }
+    ],
+    recordDeletes: ['mixed-session:timeline:1']
+  });
+
+  assert.equal(await persistence.getRecord('mixed-session:timeline:1'), null);
+  assert.equal((await persistence.getRecord('mixed-session:timeline:2')).sequence, 2);
+  assert.equal((await persistence.getSession(31)).sessionId, 'mixed-session');
+});

@@ -109,12 +109,12 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
     await transactionDone(tx);
   }
 
-  async function writeBatch({ session = null, records = [], entities = [] } = {}) {
+  async function writeBatch({ session = null, records = [], recordDeletes = [], entities = [] } = {}) {
     const db = await openDatabase();
     const storeNames = [];
 
     if (session) storeNames.push(SESSION_STORE);
-    if (records.length) storeNames.push(RECORD_STORE);
+    if (records.length || recordDeletes.length) storeNames.push(RECORD_STORE);
     if (entities.length) storeNames.push(ENTITY_STORE);
 
     if (!storeNames.length) return;
@@ -127,9 +127,10 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
         tx.objectStore(SESSION_STORE).put(session);
       }
 
-      if (records.length) {
+      if (records.length || recordDeletes.length) {
         const store = tx.objectStore(RECORD_STORE);
         for (const record of records) store.put(record);
+        for (const recordKey of recordDeletes) store.delete(recordKey);
       }
 
       if (entities.length) {
