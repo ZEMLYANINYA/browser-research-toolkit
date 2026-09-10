@@ -7,6 +7,6 @@
     "check": "node scripts/check-extension.mjs",
     "test": "node --test tests/*.test.mjs",
     "verify": "npm run build && npm run check && npm test",
-    "build": "npm --prefix ../.. run bundle:extension-agent"
+    "build": "npm --prefix ../.. run bundle:extension-agent && npm --prefix ../.. run bundle:extension-shared"
   }
 }

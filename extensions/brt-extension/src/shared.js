@@ -1,3 +1,5 @@
+import { truncateText } from '../dist/shared-text.js';
+
 export const CHANNEL = '__BRT_LAB_V01__';
 
 export const LIMITS = Object.freeze({
@@ -87,7 +89,7 @@ export function sanitizeUrl(rawUrl) {
 
 export function trimText(value, maxChars) {
   const text = typeof value === 'string' ? value : String(value ?? '');
-  return text.length > maxChars ? text.slice(0, maxChars) + '\n/* …truncated… */' : text;
+  return truncateText(text, maxChars, '\n/* …truncated… */');
 }
 
 export function safeJsonStringify(value, maxChars = 50_000) {
