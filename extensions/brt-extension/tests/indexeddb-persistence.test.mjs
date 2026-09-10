@@ -286,3 +286,126 @@ test('writeBatch commits record puts deletes and session header together', async
   assert.equal((await persistence.getRecord('mixed-session:timeline:2')).sequence, 2);
   assert.equal((await persistence.getSession(31)).sessionId, 'mixed-session');
 });
+
+test('writeBatch replacement removes stale records from the same session', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('replace-session-records')
+  });
+
+  await persistence.putRecord({
+    recordKey: 'replace-session:timeline:1',
+    sessionId: 'replace-session',
+    bucket: 'timeline',
+    sequence: 1,
+    value: { kind: 'keep-current' }
+  });
+
+  await persistence.putRecord({
+    recordKey: 'replace-session:timeline:2',
+    sessionId: 'replace-session',
+    bucket: 'timeline',
+    sequence: 2,
+    value: { kind: 'stale-ghost' }
+  });
+
+  await persistence.writeBatch({
+    session: {
+      tabId: 41,
+      sessionId: 'replace-session',
+      runState: 'running'
+    },
+    records: [
+      {
+        recordKey: 'replace-session:timeline:1',
+        sessionId: 'replace-session',
+        bucket: 'timeline',
+        sequence: 1,
+        value: { kind: 'keep-current' }
+      }
+    ],
+    replaceRecordSessionId: 'replace-session'
+  });
+
+  const records = await persistence.getRecordsBySession('replace-session');
+
+  assert.deepEqual(
+    records.map(record => record.recordKey),
+    ['replace-session:timeline:1']
+  );
+  assert.equal(await persistence.getRecord('replace-session:timeline:2'), null);
+  assert.equal((await persistence.getSession(41)).sessionId, 'replace-session');
+});
+
+test('writeBatch replacement leaves records from other sessions untouched', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('replace-session-isolation')
+  });
+
+  const foreign = {
+    recordKey: 'foreign-session:network:7',
+    sessionId: 'foreign-session',
+    bucket: 'network',
+    sequence: 7,
+    value: { kind: 'foreign-record' }
+  };
+
+  await persistence.putRecord({
+    recordKey: 'target-session:timeline:1',
+    sessionId: 'target-session',
+    bucket: 'timeline',
+    sequence: 1,
+    value: { kind: 'stale-target' }
+  });
+
+  await persistence.putRecord(foreign);
+
+  await persistence.writeBatch({
+    records: [
+      {
+        recordKey: 'target-session:timeline:2',
+        sessionId: 'target-session',
+        bucket: 'timeline',
+        sequence: 2,
+        value: { kind: 'current-target' }
+      }
+    ],
+    replaceRecordSessionId: 'target-session'
+  });
+
+  assert.equal(await persistence.getRecord('target-session:timeline:1'), null);
+  assert.equal((await persistence.getRecord('target-session:timeline:2')).sequence, 2);
+  assert.deepEqual(await persistence.getRecord(foreign.recordKey), foreign);
+});
+
+test('writeBatch rejects foreign records during session replacement', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('replace-session-foreign-record')
+  });
+
+  await persistence.putRecord({
+    recordKey: 'target-session:timeline:1',
+    sessionId: 'target-session',
+    bucket: 'timeline',
+    sequence: 1,
+    value: { kind: 'existing' }
+  });
+
+  await assert.rejects(
+    persistence.writeBatch({
+      records: [
+        {
+          recordKey: 'foreign-session:timeline:2',
+          sessionId: 'foreign-session',
+          bucket: 'timeline',
+          sequence: 2,
+          value: { kind: 'foreign' }
+        }
+      ],
+      replaceRecordSessionId: 'target-session'
+    }),
+    /Replacement records must belong/
+  );
+
+  assert.equal((await persistence.getRecord('target-session:timeline:1')).sequence, 1);
+  assert.equal(await persistence.getRecord('foreign-session:timeline:2'), null);
+});

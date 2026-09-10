@@ -26,7 +26,8 @@ export async function flushSessionToIndexedDb({
     await persistence.writeBatch({
       session: header,
       records,
-      recordDeletes: batch.deletes
+      recordDeletes: bootstrap ? [] : batch.deletes,
+      replaceRecordSessionId: bootstrap ? session.sessionId : null
     });
   } catch (error) {
     deltaQueue.requeue(batch);

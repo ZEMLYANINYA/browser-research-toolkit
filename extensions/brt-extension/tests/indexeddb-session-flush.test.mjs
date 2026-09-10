@@ -65,6 +65,8 @@ test('bootstrap flush persists all retained timeline and network records', async
   });
 
   assert.equal(written.records.length, 2);
+  assert.deepEqual(written.recordDeletes, []);
+  assert.equal(written.replaceRecordSessionId, 'session-test');
   assert.deepEqual(
     written.records.map(record => record.recordKey),
     ['session-test:timeline:1', 'session-test:network:2']

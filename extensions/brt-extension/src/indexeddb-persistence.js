@@ -109,12 +109,38 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
     await transactionDone(tx);
   }
 
-  async function writeBatch({ session = null, records = [], recordDeletes = [], entities = [] } = {}) {
+  function replaceRecordsForSession(store, sessionId, records) {
+    return new Promise((resolve, reject) => {
+      const request = store.index('bySession').openCursor(sessionId);
+
+      request.onerror = () => {
+        reject(request.error || new Error('IndexedDB session record replacement failed.'));
+      };
+
+      request.onsuccess = () => {
+        try {
+          const cursor = request.result;
+
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+            return;
+          }
+
+          for (const record of records) store.put(record);
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      };
+    });
+  }
+  async function writeBatch({ session = null, records = [], recordDeletes = [], entities = [], replaceRecordSessionId = null } = {}) {
     const db = await openDatabase();
     const storeNames = [];
 
     if (session) storeNames.push(SESSION_STORE);
-    if (records.length || recordDeletes.length) storeNames.push(RECORD_STORE);
+    if (records.length || recordDeletes.length || replaceRecordSessionId) storeNames.push(RECORD_STORE);
     if (entities.length) storeNames.push(ENTITY_STORE);
 
     if (!storeNames.length) return;
@@ -127,10 +153,21 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
         tx.objectStore(SESSION_STORE).put(session);
       }
 
-      if (records.length || recordDeletes.length) {
+      if (records.length || recordDeletes.length || replaceRecordSessionId) {
         const store = tx.objectStore(RECORD_STORE);
-        for (const record of records) store.put(record);
-        for (const recordKey of recordDeletes) store.delete(recordKey);
+
+        if (replaceRecordSessionId) {
+          for (const record of records) {
+            if (record?.sessionId !== replaceRecordSessionId) {
+              throw new TypeError('Replacement records must belong to replaceRecordSessionId.');
+            }
+          }
+
+          await replaceRecordsForSession(store, replaceRecordSessionId, records);
+        } else {
+          for (const record of records) store.put(record);
+          for (const recordKey of recordDeletes) store.delete(recordKey);
+        }
       }
 
       if (entities.length) {
