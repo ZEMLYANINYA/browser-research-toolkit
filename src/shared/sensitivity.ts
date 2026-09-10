@@ -53,3 +53,13 @@ export function redactExtensionSensitiveText(value: unknown): string {
     .replace(EXTENSION_COOKIE_HEADER_TEXT_PATTERN, '$1=[REDACTED]')
     .replace(EXTENSION_SENSITIVE_ASSIGNMENT_PATTERN, '$1=[REDACTED]');
 }
+
+const EXTENSION_SOURCE_SENSITIVE_ASSIGNMENT_PATTERN =
+  /(authorization|token|secret|password|cookie|csrf|xsrf|api[_-]?key|session(?:id)?|signature)\s*["']?\s*[:=]\s*["']?([^\s,&"'}]+)/gi;
+
+export function redactExtensionSourceText(value: unknown): string {
+  return String(value ?? '').replace(
+    EXTENSION_SOURCE_SENSITIVE_ASSIGNMENT_PATTERN,
+    '$1=[REDACTED]'
+  );
+}

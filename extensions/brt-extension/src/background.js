@@ -1,4 +1,5 @@
 import { LIMITS, trimText, sanitizeUrl, readResponseTextBounded } from './shared.js';
+import { redactExtensionSourceText } from './shared.js';
 import {
   ensureStorageStats, rebuildStorageStats, trackedPush, trackedReplace, removeTrackedAt, adjustTrackedBucketBytes,
   pushTimelineTracked, ensureDocument, resolveCanonicalDocumentId, minimalEventEnvelope,
@@ -834,7 +835,7 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
     const contentHash = await sha256Text(rawText);
     const sourceId = `src_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     const sanitizedText = includeBody
-      ? rawText.replace(/(authorization|token|secret|password|cookie|csrf|xsrf|api[_-]?key|session(?:id)?|signature)\s*["']?\s*[:=]\s*["']?[^\s,&"'}]+/gi, '$1=[REDACTED]')
+      ? redactExtensionSourceText(rawText)
       : '';
 
     const sourceRecord = attachPendingSourceObservations({
@@ -1038,7 +1039,7 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
       frameId: sourceFrame.frameId,
       documentUrl: sourceFrame.documentUrl,
       label: canonical.data?.label || 'inline script',
-      text: text.replace(/(authorization|token|secret|password|cookie|csrf|xsrf|api[_-]?key|session(?:id)?|signature)\s*["']?\s*[:=]\s*["']?[^\s,&"'}]+/gi, '$1=[REDACTED]'),
+      text: redactExtensionSourceText(text),
       contentHash,
       staticFindings: staticFindings(
         text,

@@ -1,8 +1,8 @@
-import { EXTENSION_CAPTURE_LIMITS, PAGE_EVENT_KINDS, isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, readResponseTextBounded, redactExtensionSensitiveText, sanitizeUrlWithPolicy, truncateText, validatePageEventEnvelope } from '../dist/shared-text.js';
+import { EXTENSION_CAPTURE_LIMITS, PAGE_EVENT_KINDS, isExtensionSensitiveFieldName, isExtensionSensitiveQueryKey, readResponseTextBounded, redactExtensionSensitiveText, redactExtensionSourceText, sanitizeUrlWithPolicy, truncateText, validatePageEventEnvelope } from '../dist/shared-text.js';
 
 export { PAGE_EVENT_KINDS, validatePageEventEnvelope };
 
-export { readResponseTextBounded };
+export { readResponseTextBounded, redactExtensionSourceText };
 
 export const CHANNEL = '__BRT_LAB_V01__';
 
