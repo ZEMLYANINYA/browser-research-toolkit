@@ -1,4 +1,4 @@
-import { sanitizeUrlWithPolicy, truncateText } from '../dist/shared-text.js';
+import { isExtensionSensitiveFieldName, sanitizeUrlWithPolicy, truncateText } from '../dist/shared-text.js';
 
 export const CHANNEL = '__BRT_LAB_V01__';
 
@@ -26,8 +26,6 @@ export const SENSITIVE_QUERY_KEYS = new Set([
   'cid', 'sid', 'visitorid', 'visitor_id', 'clientid', 'client_id', 'deviceid', 'device_id', 'trackingid', 'tracking_id',
   'auid', 'ecid', 'gclid', 'fbclid', 'msclkid', '_ga', '_gid'
 ]);
-
-export const SENSITIVE_FIELD = /^(authorization|proxy-authorization|cookie|set-cookie|x-csrf.*|x-xsrf.*|.*(?:token|secret|password|passwd|apikey|api_key|access_token|refresh_token|session|signature|jwt|visitor[_-]?id|client[_-]?id|device[_-]?id|tracking[_-]?id).*)$/i;
 
 const SENSITIVE_ASSIGNMENT = /\b(csrf|xsrf|access[_-]?token|refresh[_-]?token|password|passwd|secret|api[_-]?key|session(?:id)?|signature|jwt|token|visitor[_-]?id|client[_-]?id|device[_-]?id|tracking[_-]?id)\b\s*["']?\s*[:=]\s*["']?([^\s,&"'}]+)/gi;
 const AUTH_HEADER_TEXT = /\b(authorization|proxy-authorization)\b\s*["']?\s*[:=]\s*["']?[^\r\n,;&}]+/gi;
@@ -114,7 +112,7 @@ export function sanitizeStructured(value, depth = 0, seen = new WeakSet()) {
     const keys = Object.keys(value).slice(0, 200);
     if (Array.isArray(value)) return keys.map(key => sanitizeStructured(ownDataValue(value, key), depth + 1, seen));
     const result = {};
-    for (const key of keys) result[key] = SENSITIVE_FIELD.test(key) ? '[REDACTED]' : sanitizeStructured(ownDataValue(value, key), depth + 1, seen);
+    for (const key of keys) result[key] = isExtensionSensitiveFieldName(key) ? '[REDACTED]' : sanitizeStructured(ownDataValue(value, key), depth + 1, seen);
     return result;
   } finally {
     seen.delete(value);
