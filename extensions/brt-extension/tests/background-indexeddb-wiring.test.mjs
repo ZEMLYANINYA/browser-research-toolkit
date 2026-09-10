@@ -272,3 +272,57 @@ test('loadSession marks successful IndexedDB recovery and exposes broken recover
   assert.ok(fallbackBranch > recoveredDiagnostic);
   assert.ok(fallbackDiagnostic > fallbackBranch);
 });
+
+test('flushSession returns the durable persistence result to lifecycle callers', () => {
+  const source = flushSessionSource();
+
+  assert.match(source, /return await pending;/);
+  assert.match(source, /indexedDbOk,/);
+  assert.match(source, /stale: false/);
+});
+
+test('STOP waits for immediate persistence and rejects a non-durable IndexedDB result', () => {
+  const start = background.indexOf("if (message?.type === 'BRT_STOP') {");
+  const end = background.indexOf("if (message?.type === 'BRT_CLEAR') {", start);
+
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+
+  const source = background.slice(start, end);
+  const stopped = source.indexOf("session.runState = 'stopped';");
+  const detach = source.indexOf('await detachDeepMode(tab.id, session);');
+  const flush = source.indexOf('const flushResult = await flushSessionNow(tab.id);');
+  const guard = source.indexOf('if (!flushResult?.indexedDbOk || flushResult.stale) {');
+  const response = source.indexOf('sendResponse({ ok: true });');
+
+  assert.ok(stopped >= 0);
+  assert.ok(detach > stopped);
+  assert.ok(flush > detach);
+  assert.ok(guard > flush);
+  assert.ok(response > guard);
+});
+
+test('flushSessionNow drains an existing in-flight flush before returning', () => {
+  const start = background.indexOf('async function flushSessionNow(tabId) {');
+  const end = background.indexOf('\nfunction suspendSessionFlush(', start);
+
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+
+  const source = background.slice(start, end);
+  const loop = source.indexOf('while (true) {');
+  const inFlight = source.indexOf('if (state.inFlight) {', loop);
+  const markDirty = source.indexOf('state.dirty = true;', inFlight);
+  const awaitExisting = source.indexOf('result = await state.promise;', markDirty);
+  const freshFlush = source.indexOf('result = await flushSession(tabId);', awaitExisting);
+  const cleanGuard = source.indexOf('if (!state.dirty) {', freshFlush);
+  const resultReturn = source.indexOf('return result;', cleanGuard);
+
+  assert.ok(loop >= 0);
+  assert.ok(inFlight > loop);
+  assert.ok(markDirty > inFlight);
+  assert.ok(awaitExisting > markDirty);
+  assert.ok(freshFlush > awaitExisting);
+  assert.ok(cleanGuard > freshFlush);
+  assert.ok(resultReturn > cleanGuard);
+});

@@ -358,6 +358,9 @@ async function flushSession(tabId) {
   state.dirty = false;
 
   const pending = (async () => {
+    let legacyOk = true;
+    let indexedDbOk = true;
+
     try {
       applyBackpressure(session);
 
@@ -367,11 +370,17 @@ async function flushSession(tabId) {
       try {
         await sessionPersistence.save(tabId, session);
       } catch (error) {
+        legacyOk = false;
         diagnostic(session, 'storage-write-failed', { message: String(error?.message || error) });
       }
 
       if (sessions.get(tabId)?.sessionId !== session.sessionId) {
-        return;
+        return {
+          sessionId: session.sessionId,
+          legacyOk,
+          indexedDbOk: false,
+          stale: true
+        };
       }
 
       try {
@@ -384,8 +393,16 @@ async function flushSession(tabId) {
 
         if (bootstrap && sessions.get(tabId)?.sessionId === session.sessionId) markIndexedDbBootstrapped(session);
       } catch (error) {
+        indexedDbOk = false;
         diagnostic(session, 'indexeddb-write-failed', { message: String(error?.message || error) });
       }
+
+      return {
+        sessionId: session.sessionId,
+        legacyOk,
+        indexedDbOk,
+        stale: false
+      };
     } finally {
       state.inFlight = false;
       if (state.dirty && sessions.has(tabId)) scheduleFlush(tabId, 50);
@@ -395,7 +412,7 @@ async function flushSession(tabId) {
   state.promise = pending;
 
   try {
-    await pending;
+    return await pending;
   } finally {
     if (state.promise === pending) {
       state.promise = null;
@@ -435,12 +452,32 @@ async function settleFlushBeforeLifecycle(tabId, { flushDirty = false } = {}) {
 async function flushSessionNow(tabId) {
   const state = getFlushState(tabId);
 
-  if (state.timer) {
-    clearTimeout(state.timer);
-    state.timer = null;
-  }
+  if (state.suspended) return;
 
-  return flushSession(tabId);
+  let result = null;
+
+  while (true) {
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+
+    if (state.inFlight) {
+      state.dirty = true;
+      result = await state.promise;
+    } else {
+      result = await flushSession(tabId);
+    }
+
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+
+    if (!state.dirty) {
+      return result;
+    }
+  }
 }
 
 function suspendSessionFlush(tabId) {
@@ -1809,7 +1846,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         session.agentStatusAt = Date.now();
         session.runState = 'stopped';
         await detachDeepMode(tab.id, session);
-        scheduleFlush(tab.id);
+
+        const flushResult = await flushSessionNow(tab.id);
+
+        if (!flushResult?.indexedDbOk || flushResult.stale) {
+          throw new Error('STOP state was not durably persisted to IndexedDB.');
+        }
       }
       sendResponse({ ok: true });
       return;
