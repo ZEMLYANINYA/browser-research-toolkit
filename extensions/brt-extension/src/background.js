@@ -22,7 +22,9 @@ import { createIndexedDbPersistence } from './indexeddb-persistence.js';
 import { flushSessionToIndexedDb } from './indexeddb-session-flush.js';
 import { recoverSessionFromIndexedDb } from './indexeddb-session-recovery.js';
 import { createRecordDeltaQueue } from './record-delta-queue.js';
+import { createEntityDeltaQueue } from './entity-delta-queue.js';
 import { createPersistedRecord } from './session-persistence-model.js';
+import { createPersistedEntity, sourceEntityKey } from './session-entity-model.js';
 
 const sessions = new Map();
 const cdpTabs = new Set();
@@ -31,6 +33,7 @@ const generationCounters = new Map();
 const sessionLoads = new Map();
 const flushStates = new Map();
 const recordDeltas = new Map();
+const entityDeltas = new Map();
 const indexedDbBootstraps = new Map();
 const pendingSourceTasks = new Map();
 const pendingSourceObservations = new Map();
@@ -210,7 +213,8 @@ async function loadSession(tabId) {
       markIndexedDbBootstrapped(session);
       diagnostic(session, 'indexeddb-session-recovered', {
         sessionId: session.sessionId,
-        recordCount: Array.isArray(recovery?.records) ? recovery.records.length : 0
+        recordCount: Array.isArray(recovery?.records) ? recovery.records.length : 0,
+        entityCount: Array.isArray(recovery?.entities) ? recovery.entities.length : 0
       });
     } else if (recoveryError || (recovery && recovery.status !== 'missing')) {
       const detail = {
@@ -276,6 +280,63 @@ function resetRecordDelta(tabId) {
   recordDeltas.delete(tabId);
 }
 
+function getSessionEntityDelta(session) {
+  const tabId = Number(session?.tabId);
+
+  if (!Number.isInteger(tabId)) {
+    throw new TypeError('session.tabId is required for entity persistence.');
+  }
+
+  if (!session?.sessionId) {
+    throw new TypeError('session.sessionId is required for entity persistence.');
+  }
+
+  let state = entityDeltas.get(tabId);
+
+  if (!state || state.sessionId !== session.sessionId) {
+    state = {
+      sessionId: session.sessionId,
+      delta: createEntityDeltaQueue()
+    };
+    entityDeltas.set(tabId, state);
+  }
+
+  return state.delta;
+}
+
+function queueEntityPut(session, bucket, value) {
+  const entity = createPersistedEntity(session.sessionId, bucket, value);
+  getSessionEntityDelta(session).put(entity);
+  return entity;
+}
+
+function queueSourceEntityPut(session, source) {
+  if (!source?.id) return null;
+  return queueEntityPut(session, 'source', source);
+}
+
+function queueSourceEntityDelete(session, source) {
+  if (!source?.id) return;
+  getSessionEntityDelta(session).remove(sourceEntityKey(session.sessionId, source.id));
+}
+
+function pushSourceTracked(session, source) {
+  const removed = trackedPush(session, 'sources', source, LIMITS.maxSources, 'source');
+  queueSourceEntityPut(session, source);
+  for (const evicted of removed) queueSourceEntityDelete(session, evicted);
+  return removed;
+}
+
+function removeSourceTrackedAt(session, index) {
+  const removed = removeTrackedAt(session, 'sources', index, 'source');
+  queueSourceEntityDelete(session, removed);
+  return removed;
+}
+
+function resetEntityDelta(tabId) {
+  entityDeltas.delete(tabId);
+}
+
 function isIndexedDbBootstrapped(session) {
   return indexedDbBootstraps.get(session.tabId) === session.sessionId;
 }
@@ -323,12 +384,13 @@ function applyBackpressure(session) {
   }
 
   while (stats.approxBytes > target && session.sources.length > 20) {
-    removeTrackedAt(session, 'sources', 0, 'source');
+    removeSourceTrackedAt(session, 0);
     removedSources += 1;
   }
 
   if (stats.approxBytes > target && session.html) {
     trackedReplace(session, 'html', trimText(session.html, Math.max(50_000, Math.floor(LIMITS.maxHtmlChars * 0.25))), 'html');
+    queueEntityPut(session, 'html', session.html);
   }
 
   diagnostic(session, 'backpressure-trim', {
@@ -365,6 +427,7 @@ async function flushSession(tabId) {
       applyBackpressure(session);
 
       const deltaQueue = getSessionRecordDelta(session);
+      const entityDeltaQueue = getSessionEntityDelta(session);
       const bootstrap = !isIndexedDbBootstrapped(session);
 
       try {
@@ -387,6 +450,7 @@ async function flushSession(tabId) {
         await flushSessionToIndexedDb({
           session,
           deltaQueue,
+          entityDeltaQueue,
           persistence: indexedDbPersistence,
           bootstrap
         });
@@ -792,6 +856,7 @@ function indexExternalSource(tabId, payload) {
       sourceFrame,
       observedAt
     );
+    queueSourceEntityPut(session, existingSource);
 
     /*
      * recordSourceObservation mutates a retained source in place,
@@ -917,6 +982,7 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
 
   if (existingSource) {
     attachPendingSourceObservations(existingSource);
+    queueSourceEntityPut(session, existingSource);
     rebuildStorageStats(session);
     session.updatedAt = Date.now();
     scheduleFlush(tabId);
@@ -968,13 +1034,7 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
         staticFindings: [],
         fetchPolicy: { decision: 'blocked', reason: sourcePolicy.reason }
       });
-      const removed = trackedPush(
-        session,
-        'sources',
-        sourceRecord,
-        LIMITS.maxSources,
-        'source'
-      );
+      const removed = pushSourceTracked(session, sourceRecord);
       session.counters.sources = session.sources.length;
       if (removed.length) diagnostic(session, 'source-retention-evicted', { count: removed.length });
       diagnostic(session, 'source-fetch-policy-blocked', { url: shownUrl, reason: sourcePolicy.reason, classification });
@@ -1027,13 +1087,7 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
             }
           });
 
-        const removed = trackedPush(
-          session,
-          'sources',
-          sourceRecord,
-          LIMITS.maxSources,
-          'source'
-        );
+        const removed = pushSourceTracked(session, sourceRecord);
 
         session.counters.sources =
           session.sources.length;
@@ -1110,13 +1164,7 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
       bytesRead: bounded.bytesRead,
       staticFindings: includeBody ? staticFindings(rawText, shownUrl) : []
     });
-    const removed = trackedPush(
-      session,
-      'sources',
-      sourceRecord,
-      LIMITS.maxSources,
-      'source'
-    );
+    const removed = pushSourceTracked(session, sourceRecord);
     session.counters.sources = session.sources.length;
     if (removed.length) diagnostic(session, 'source-retention-evicted', { count: removed.length });
     diagnostic(session, bounded.truncated ? 'source-fetch-truncated' : 'source-fetch-success', { url: shownUrl, status: res.status, bytesRead: bounded.bytesRead });
@@ -1263,8 +1311,10 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
 
   if (canonical.kind === 'html-snapshot' && canonical.frameId === 0) {
     trackedReplace(session, 'html', trimText(canonical.data?.text || '', LIMITS.maxHtmlChars), 'html');
+    queueEntityPut(session, 'html', session.html);
   } else if (canonical.kind === 'runtime-snapshot' && canonical.frameId === 0) {
     trackedReplace(session, 'runtime', (canonical.data?.entries || []).slice(0, LIMITS.maxRuntimeEntries), 'runtime');
+    queueEntityPut(session, 'runtime', session.runtime);
   } else if (canonical.kind === 'runtime-watch' && canonical.frameId === 0) {
     const path = canonical.data?.path;
     if (path) {
@@ -1285,7 +1335,7 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
       LIMITS.maxSourceChars
     );
     const contentHash = await sha256Text(text);
-    trackedPush(session, 'sources', {
+    const sourceRecord = {
       id: `src_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
       type: 'inline-script',
       url: sourceFrame.documentUrl || session.pageUrl,
@@ -1299,7 +1349,9 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
         text,
         sourceFrame.documentUrl || session.pageUrl
       )
-    }, LIMITS.maxSources, 'source');
+    };
+
+    pushSourceTracked(session, sourceRecord);
     session.counters.sources = session.sources.length;
   } else if (canonical.kind === 'source-url') {
     void indexExternalSource(tabId, canonical);
@@ -1782,6 +1834,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       const session = freshSession(tab.id);
       resetRecordDelta(tab.id);
+      resetEntityDelta(tab.id);
       resetIndexedDbBootstrap(tab.id);
       taskAccounting.delete(tab.id);
       antiBotAnalysisCache.delete(tab.id);
@@ -1878,6 +1931,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await sessionPersistence.remove(tab.id);
 
         resetRecordDelta(tab.id);
+        resetEntityDelta(tab.id);
         resetIndexedDbBootstrap(tab.id);
         sessions.set(tab.id, freshSession(tab.id));
         resumeSessionFlush(tab.id);
@@ -2020,12 +2074,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             normalizedPattern
         ) continue;
 
-        removeTrackedAt(
-          session,
-          'sources',
-          i,
-          'source'
-        );
+        removeSourceTrackedAt(session, i);
       }
 
       session.counters.sources =
@@ -2162,6 +2211,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       const session = { ...freshSession(tab.id), ...imported, tabId: tab.id, sessionId: `import_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, running: false, importedReadOnly: true, importedAt: Date.now() };
       resetRecordDelta(tab.id);
+      resetEntityDelta(tab.id);
       resetIndexedDbBootstrap(tab.id);
       taskAccounting.delete(tab.id);
       antiBotAnalysisCache.delete(tab.id);
@@ -2333,6 +2383,7 @@ chrome.tabs?.onRemoved?.addListener((tabId) => {
   cdpTabs.delete(tabId);
   generationCounters.delete(tabId);
   resetRecordDelta(tabId);
+  resetEntityDelta(tabId);
   resetIndexedDbBootstrap(tabId);
   sessions.delete(tabId);
   // Persistent session data is intentionally retained by the persistence backend.

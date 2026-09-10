@@ -7,6 +7,7 @@ function reader(overrides = {}) {
     async getActiveSession() { return null; },
     async getSession() { return null; },
     async getRecordsBySession() { return []; },
+    async getEntitiesBySession() { return []; },
     ...overrides
   };
 }
@@ -82,12 +83,34 @@ test('recovery hydrates persisted records into the existing session shape', asyn
     }
   ];
 
+  const entities = [
+    {
+      entityKey: 'session-a:source:src-1',
+      sessionId: 'session-a',
+      bucket: 'source',
+      value: { id: 'src-1', text: 'const x = 1;' }
+    },
+    {
+      entityKey: 'session-a:html:current',
+      sessionId: 'session-a',
+      bucket: 'html',
+      value: '<main>persisted</main>'
+    },
+    {
+      entityKey: 'session-a:runtime:current',
+      sessionId: 'session-a',
+      bucket: 'runtime',
+      value: [{ key: 'x', value: 1 }]
+    }
+  ];
+
   const result = await recoverSessionFromIndexedDb({
     tabId: 7,
     persistence: reader({
       async getActiveSession() { return { tabId: 7, sessionId: 'session-a' }; },
       async getSession() { return header; },
-      async getRecordsBySession() { return records; }
+      async getRecordsBySession() { return records; },
+      async getEntitiesBySession() { return entities; }
     })
   });
 
@@ -96,6 +119,10 @@ test('recovery hydrates persisted records into the existing session shape', asyn
   assert.deepEqual(result.session.timeline.map(item => item.sequence), [1, 3]);
   assert.deepEqual(result.session.network.map(item => item.sequence), [4]);
   assert.equal(result.records.length, 3);
+  assert.equal(result.entities.length, 3);
+  assert.deepEqual(result.session.sources, [{ id: 'src-1', text: 'const x = 1;' }]);
+  assert.equal(result.session.html, '<main>persisted</main>');
+  assert.deepEqual(result.session.runtime, [{ key: 'x', value: 1 }]);
   assert.deepEqual(result.issues, []);
 });
 

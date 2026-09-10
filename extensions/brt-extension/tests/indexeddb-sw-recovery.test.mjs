@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { indexedDB } from 'fake-indexeddb';
 import { createIndexedDbPersistence } from '../src/indexeddb-persistence.js';
 import { createRecordDeltaQueue } from '../src/record-delta-queue.js';
+import { createEntityDeltaQueue } from '../src/entity-delta-queue.js';
 import { createPersistedRecord, hydrateSession } from '../src/session-persistence-model.js';
+import { createPersistedEntity, hydrateSessionEntities } from '../src/session-entity-model.js';
 import { flushSessionToIndexedDb } from '../src/indexeddb-session-flush.js';
 import { recoverSessionFromIndexedDb } from '../src/indexeddb-session-recovery.js';
 
@@ -38,10 +40,14 @@ test('START -> events -> worker death -> recovery -> events -> STOP preserves on
     runState: 'running',
     diagnostics: [],
     timeline: [],
-    network: []
+    network: [],
+    sources: [{ id: 'src-before-restart', text: 'const before = true;' }],
+    html: '<main>before restart</main>',
+    runtime: [{ key: 'phase', value: 'before-restart' }]
   };
 
   const queueA = createRecordDeltaQueue();
+  const entityQueueA = createEntityDeltaQueue();
 
   sessionA.timeline.push(timelineEvent(sessionId, 1, 'before-restart-a'));
   sessionA.timeline.push(timelineEvent(sessionId, 2, 'before-restart-b'));
@@ -54,6 +60,7 @@ test('START -> events -> worker death -> recovery -> events -> STOP preserves on
   await flushSessionToIndexedDb({
     session: sessionA,
     deltaQueue: queueA,
+    entityDeltaQueue: entityQueueA,
     persistence,
     bootstrap: true
   });
@@ -71,6 +78,10 @@ test('START -> events -> worker death -> recovery -> events -> STOP preserves on
     recovery.session.timeline.map(item => item.sequence),
     [1, 2]
   );
+  assert.deepEqual(recovery.session.sources, sessionA.sources);
+  assert.equal(recovery.session.html, '<main>before restart</main>');
+  assert.deepEqual(recovery.session.runtime, [{ key: 'phase', value: 'before-restart' }]);
+  assert.equal(recovery.entities.length, 3);
 
   // Worker incarnation B.
   const sessionB = recovery.session;
@@ -85,18 +96,22 @@ test('START -> events -> worker death -> recovery -> events -> STOP preserves on
   });
 
   const queueB = createRecordDeltaQueue();
+  const entityQueueB = createEntityDeltaQueue();
   const afterRestart = timelineEvent(sessionId, 3, 'after-restart');
 
   sessionB.timeline.push(afterRestart);
   sessionB.sequence = 3;
   sessionB.running = false;
   sessionB.runState = 'stopped';
+  sessionB.html = '<main>after restart</main>';
 
   queueB.put(createPersistedRecord(sessionId, 'timeline', afterRestart));
+  entityQueueB.put(createPersistedEntity(sessionId, 'html', sessionB.html));
 
   await flushSessionToIndexedDb({
     session: sessionB,
     deltaQueue: queueB,
+    entityDeltaQueue: entityQueueB,
     persistence,
     bootstrap: false
   });
@@ -107,7 +122,11 @@ test('START -> events -> worker death -> recovery -> events -> STOP preserves on
 
   const header = await persistence.getSession(sessionId);
   const records = await persistence.getRecordsBySession(sessionId);
-  const exported = hydrateSession(header, records);
+  const entities = await persistence.getEntitiesBySession(sessionId);
+  const exported = hydrateSessionEntities(
+    hydrateSession(header, records),
+    entities
+  );
 
   assert.equal(exported.sessionId, sessionId);
   assert.equal(exported.running, false);
@@ -116,6 +135,10 @@ test('START -> events -> worker death -> recovery -> events -> STOP preserves on
     exported.timeline.map(item => item.sequence),
     [1, 2, 3]
   );
+  assert.deepEqual(exported.sources, sessionA.sources);
+  assert.equal(exported.html, '<main>after restart</main>');
+  assert.deepEqual(exported.runtime, [{ key: 'phase', value: 'before-restart' }]);
+  assert.equal(entities.length, 3);
   assert.equal(
     exported.diagnostics.some(item => item.kind === 'indexeddb-session-recovered'),
     true

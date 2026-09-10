@@ -1,11 +1,12 @@
 import { hydrateSession } from './session-persistence-model.js';
+import { hydrateSessionEntities } from './session-entity-model.js';
 
 export async function recoverSessionFromIndexedDb({ tabId, persistence } = {}) {
   if (!Number.isInteger(tabId)) {
     throw new TypeError('tabId must be an integer.');
   }
 
-  if (!persistence || typeof persistence.getActiveSession !== 'function' || typeof persistence.getSession !== 'function' || typeof persistence.getRecordsBySession !== 'function') {
+  if (!persistence || typeof persistence.getActiveSession !== 'function' || typeof persistence.getSession !== 'function' || typeof persistence.getRecordsBySession !== 'function' || typeof persistence.getEntitiesBySession !== 'function') {
     throw new TypeError('IndexedDB persistence reader is required.');
   }
 
@@ -17,6 +18,7 @@ export async function recoverSessionFromIndexedDb({ tabId, persistence } = {}) {
       session: null,
       pointer: null,
       records: [],
+      entities: [],
       issues: []
     };
   }
@@ -27,6 +29,7 @@ export async function recoverSessionFromIndexedDb({ tabId, persistence } = {}) {
       session: null,
       pointer,
       records: [],
+      entities: [],
       issues: ['invalid-active-session-pointer']
     };
   }
@@ -39,6 +42,7 @@ export async function recoverSessionFromIndexedDb({ tabId, persistence } = {}) {
       session: null,
       pointer,
       records: [],
+      entities: [],
       issues: ['active-session-header-missing']
     };
   }
@@ -49,12 +53,20 @@ export async function recoverSessionFromIndexedDb({ tabId, persistence } = {}) {
       session: null,
       pointer,
       records: [],
+      entities: [],
       issues: ['active-session-header-mismatch']
     };
   }
 
-  const records = await persistence.getRecordsBySession(pointer.sessionId);
-  const session = hydrateSession(header, records);
+  const [records, entities] = await Promise.all([
+    persistence.getRecordsBySession(pointer.sessionId),
+    persistence.getEntitiesBySession(pointer.sessionId)
+  ]);
+
+  const recordSession = hydrateSession(header, records);
+  const session = recordSession
+    ? hydrateSessionEntities(recordSession, entities)
+    : null;
 
   if (!session) {
     return {
@@ -62,6 +74,7 @@ export async function recoverSessionFromIndexedDb({ tabId, persistence } = {}) {
       session: null,
       pointer,
       records,
+      entities,
       issues: ['session-hydration-failed']
     };
   }
@@ -71,6 +84,7 @@ export async function recoverSessionFromIndexedDb({ tabId, persistence } = {}) {
     session,
     pointer,
     records,
+    entities,
     issues: []
   };
 }
