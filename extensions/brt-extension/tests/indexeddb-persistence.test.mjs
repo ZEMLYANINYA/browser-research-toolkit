@@ -679,3 +679,55 @@ test('deleteSessionData preserves a newer active pointer for the same tab', asyn
   assert.equal((await persistence.getSession('new-session')).sessionId, 'new-session');
   assert.equal((await persistence.getActiveSession(63)).sessionId, 'new-session');
 });
+
+test('writeBatch deletes entities by entityKey', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('entity-delete')
+  });
+
+  const entity = {
+    entityKey: 'entity-session:source:src-1',
+    sessionId: 'entity-session',
+    bucket: 'source',
+    value: { id: 'src-1', text: 'example' }
+  };
+
+  await persistence.putEntity(entity);
+  assert.deepEqual(await persistence.getEntity(entity.entityKey), entity);
+
+  await persistence.writeBatch({
+    entityDeletes: [entity.entityKey]
+  });
+
+  assert.equal(await persistence.getEntity(entity.entityKey), null);
+});
+
+test('writeBatch applies entity puts and deletes in one transaction', async () => {
+  const persistence = createIndexedDbPersistence(indexedDB, {
+    dbName: dbName('entity-mixed-batch')
+  });
+
+  const oldEntity = {
+    entityKey: 'entity-session:source:old',
+    sessionId: 'entity-session',
+    bucket: 'source',
+    value: { id: 'old' }
+  };
+
+  const newEntity = {
+    entityKey: 'entity-session:source:new',
+    sessionId: 'entity-session',
+    bucket: 'source',
+    value: { id: 'new' }
+  };
+
+  await persistence.putEntity(oldEntity);
+
+  await persistence.writeBatch({
+    entities: [newEntity],
+    entityDeletes: [oldEntity.entityKey]
+  });
+
+  assert.equal(await persistence.getEntity(oldEntity.entityKey), null);
+  assert.deepEqual(await persistence.getEntity(newEntity.entityKey), newEntity);
+});

@@ -233,6 +233,7 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
     records = [],
     recordDeletes = [],
     entities = [],
+    entityDeletes = [],
     replaceRecordSessionId = null
   } = {}) {
     if (
@@ -249,7 +250,7 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
     if (session) storeNames.push(SESSION_STORE);
     if (activeSession) storeNames.push(ACTIVE_SESSION_STORE);
     if (records.length || recordDeletes.length || replaceRecordSessionId) storeNames.push(RECORD_STORE);
-    if (entities.length) storeNames.push(ENTITY_STORE);
+    if (entities.length || entityDeletes.length) storeNames.push(ENTITY_STORE);
 
     if (!storeNames.length) return;
 
@@ -282,9 +283,10 @@ export function createIndexedDbPersistence(indexedDbFactory, options = {}) {
         }
       }
 
-      if (entities.length) {
+      if (entities.length || entityDeletes.length) {
         const store = tx.objectStore(ENTITY_STORE);
         for (const entity of entities) store.put(entity);
+        for (const entityKey of entityDeletes) store.delete(entityKey);
       }
     } catch (error) {
       try {
