@@ -27,6 +27,16 @@ function startLifecycleSource() {
   return background.slice(start, end);
 }
 
+function importLifecycleSource() {
+  const start = background.indexOf("if (message?.type === 'BRT_IMPORT_SESSION') {");
+  const end = background.indexOf('\n  })().catch(', start);
+
+  assert.notEqual(start, -1, 'BRT_IMPORT_SESSION branch must exist');
+  assert.notEqual(end, -1, 'runtime message boundary must exist');
+
+  return background.slice(start, end);
+}
+
 test('dual-write flush captures delta state before the first await', () => {
   const source = flushSessionSource();
 
@@ -115,4 +125,29 @@ test('lifecycle barrier waits for in-flight work and drains dirty tails when req
   assert.ok(awaitPending > pending);
   assert.ok(dirtyLoop > awaitPending);
   assert.ok(tailFlush > dirtyLoop);
+});
+
+test('IMPORT settles the previous lifecycle before installing and flushing the imported session', () => {
+  const source = importLifecycleSource();
+
+  const imported = source.indexOf('const imported = message.session;');
+  const settle = source.indexOf('await settleFlushBeforeLifecycle(tab.id, { flushDirty: true });');
+  const construct = source.indexOf('const session = { ...freshSession(tab.id), ...imported');
+  const resetDelta = source.indexOf('resetRecordDelta(tab.id);');
+  const resetBootstrap = source.indexOf('resetIndexedDbBootstrap(tab.id);');
+  const install = source.indexOf('sessions.set(tab.id, session);');
+  const flush = source.indexOf('await flushSessionNow(tab.id);', install);
+  const response = source.indexOf('sendResponse({ ok: true, sessionId: session.sessionId });', flush);
+
+  assert.ok(imported >= 0);
+  assert.ok(settle > imported);
+  assert.ok(construct > settle);
+  assert.ok(resetDelta > construct);
+  assert.ok(resetBootstrap > resetDelta);
+  assert.ok(install > resetBootstrap);
+  assert.ok(flush > install);
+  assert.ok(response > flush);
+
+  const immediateFlushes = source.match(/await flushSessionNow\(tab\.id\);/g) || [];
+  assert.equal(immediateFlushes.length, 1);
 });

@@ -2033,6 +2033,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tab = await activeTab();
       if (!tab?.id || !message.session || typeof message.session !== 'object') throw new Error('Invalid session import.');
       const imported = message.session;
+
+      await settleFlushBeforeLifecycle(tab.id, { flushDirty: true });
+
       const session = { ...freshSession(tab.id), ...imported, tabId: tab.id, sessionId: `import_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, running: false, importedReadOnly: true, importedAt: Date.now() };
       resetRecordDelta(tab.id);
       resetIndexedDbBootstrap(tab.id);
@@ -2046,7 +2049,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       rebuildStorageStats(session);
       pushTimeline(session, { kind: 'session-import', eventId: `evt_${Date.now().toString(36)}_${++session.sequence}`, sessionId: session.sessionId, sequence: session.sequence, wallTime: Date.now(), monotonicTime: null, label: 'Imported session', data: { originalSessionId: imported.sessionId || null } });
       sessions.set(tab.id, session);
-      scheduleFlush(tab.id);
+      await flushSessionNow(tab.id);
       sendResponse({ ok: true, sessionId: session.sessionId });
       return;
     }
