@@ -250,7 +250,7 @@ function resetIndexedDbBootstrap(tabId) {
 function getFlushState(tabId) {
   let state = flushStates.get(tabId);
   if (!state) {
-    state = { timer: null, inFlight: false, dirty: false, promise: null };
+    state = { timer: null, inFlight: false, dirty: false, promise: null, suspended: false };
     flushStates.set(tabId, state);
   }
   return state;
@@ -303,6 +303,8 @@ function applyBackpressure(session) {
 
 async function flushSession(tabId) {
   const state = getFlushState(tabId);
+
+  if (state.suspended) return;
 
   if (state.inFlight) {
     state.dirty = true;
@@ -401,8 +403,35 @@ async function flushSessionNow(tabId) {
   return flushSession(tabId);
 }
 
+function suspendSessionFlush(tabId) {
+  const state = getFlushState(tabId);
+
+  if (state.inFlight) {
+    throw new Error('Cannot suspend session flush while persistence is in flight.');
+  }
+
+  if (state.timer) {
+    clearTimeout(state.timer);
+    state.timer = null;
+  }
+
+  state.dirty = false;
+  state.suspended = true;
+}
+
+function resumeSessionFlush(tabId) {
+  const state = getFlushState(tabId);
+  state.suspended = false;
+}
+
+async function settleAndSuspendSessionFlush(tabId) {
+  await settleFlushBeforeLifecycle(tabId, { flushDirty: false });
+  suspendSessionFlush(tabId);
+}
+
 function scheduleFlush(tabId, delay = 350) {
   const state = getFlushState(tabId);
+  if (state.suspended) return;
   state.dirty = true;
   if (state.timer) clearTimeout(state.timer);
   state.timer = setTimeout(() => {
@@ -1749,14 +1778,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'BRT_CLEAR') {
       const tab = await activeTab();
       if (tab?.id) {
+        const session = await loadSession(tab.id);
+        const sessionId = session.sessionId;
+
+        await settleAndSuspendSessionFlush(tab.id);
+
         for (const task of taskRunner.list({ tabId: tab.id })) taskRunner.cancel(task.taskId, 'Session cleared.');
         taskAccounting.delete(tab.id);
         antiBotAnalysisCache.delete(tab.id);
         for (const key of pendingSourceTasks.keys()) if (key.startsWith(`${tab.id}:`)) pendingSourceTasks.delete(key);
+
+        await indexedDbPersistence.deleteSessionData({
+          tabId: tab.id,
+          sessionId
+        });
+
+        await sessionPersistence.remove(tab.id);
+
         resetRecordDelta(tab.id);
         resetIndexedDbBootstrap(tab.id);
         sessions.set(tab.id, freshSession(tab.id));
-        await sessionPersistence.remove(tab.id);
+        resumeSessionFlush(tab.id);
       }
       sendResponse({ ok: true });
       return;

@@ -37,6 +37,16 @@ function importLifecycleSource() {
   return background.slice(start, end);
 }
 
+function clearLifecycleSource() {
+  const start = background.indexOf("if (message?.type === 'BRT_CLEAR') {");
+  const end = background.indexOf("if (message?.type === 'BRT_SET_SOURCE_HOST_PERMISSION') {", start);
+
+  assert.notEqual(start, -1, 'BRT_CLEAR branch must exist');
+  assert.notEqual(end, -1, 'BRT_CLEAR branch boundary must exist');
+
+  return background.slice(start, end);
+}
+
 test('dual-write flush captures delta state before the first await', () => {
   const source = flushSessionSource();
 
@@ -150,4 +160,77 @@ test('IMPORT settles the previous lifecycle before installing and flushing the i
 
   const immediateFlushes = source.match(/await flushSessionNow\(tab\.id\);/g) || [];
   assert.equal(immediateFlushes.length, 1);
+});
+
+test('flush suspension blocks direct and scheduled persistence', () => {
+  const flushStart = background.indexOf('async function flushSession(tabId) {');
+  const flushEnd = background.indexOf('async function settleFlushBeforeLifecycle', flushStart);
+  const flushSource = background.slice(flushStart, flushEnd);
+
+  const scheduleStart = background.indexOf('function scheduleFlush(tabId, delay = 350) {');
+  const scheduleEnd = background.indexOf('\nfunction diagnostic(', scheduleStart);
+  const scheduleSource = background.slice(scheduleStart, scheduleEnd);
+
+  assert.match(flushSource, /if \(state\.suspended\) return;/);
+  assert.match(scheduleSource, /if \(state\.suspended\) return;/);
+});
+
+test('destructive lifecycle suspension settles persistence before fencing new flushes', () => {
+  const start = background.indexOf('async function settleAndSuspendSessionFlush(tabId) {');
+  const end = background.indexOf('\nfunction scheduleFlush(', start);
+
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+
+  const source = background.slice(start, end);
+  const settle = source.indexOf('await settleFlushBeforeLifecycle(tabId, { flushDirty: false });');
+  const suspend = source.indexOf('suspendSessionFlush(tabId);');
+
+  assert.ok(settle >= 0);
+  assert.ok(suspend > settle);
+});
+
+test('CLEAR keeps persistence fenced until the current session is fully deleted', () => {
+  const source = clearLifecycleSource();
+
+  const load = source.indexOf('const session = await loadSession(tab.id);');
+  const captureId = source.indexOf('const sessionId = session.sessionId;');
+  const fence = source.indexOf('await settleAndSuspendSessionFlush(tab.id);');
+  const idbDelete = source.indexOf('await indexedDbPersistence.deleteSessionData({');
+  const legacyDelete = source.indexOf('await sessionPersistence.remove(tab.id);');
+  const resetDelta = source.indexOf('resetRecordDelta(tab.id);');
+  const resetBootstrap = source.indexOf('resetIndexedDbBootstrap(tab.id);');
+  const fresh = source.indexOf('sessions.set(tab.id, freshSession(tab.id));');
+  const resume = source.indexOf('resumeSessionFlush(tab.id);', fresh);
+  const response = source.indexOf('sendResponse({ ok: true });', resume);
+
+  assert.ok(load >= 0);
+  assert.ok(captureId > load);
+  assert.ok(fence > captureId);
+  assert.ok(idbDelete > fence);
+  assert.ok(legacyDelete > idbDelete);
+  assert.ok(resetDelta > legacyDelete);
+  assert.ok(resetBootstrap > resetDelta);
+  assert.ok(fresh > resetBootstrap);
+  assert.ok(resume > fresh);
+  assert.ok(response > resume);
+  assert.equal(source.includes('} finally {'), false);
+
+  assert.match(source, /sessionId\s*\n\s*\}\);/);
+  assert.equal((source.match(/resumeSessionFlush\(tab\.id\);/g) || []).length, 1);
+});
+
+test('CLEAR resumes persistence only after both durable stores are deleted', () => {
+  const source = clearLifecycleSource();
+
+  const idbDelete = source.indexOf('await indexedDbPersistence.deleteSessionData({');
+  const legacyDelete = source.indexOf('await sessionPersistence.remove(tab.id);');
+  const fresh = source.indexOf('sessions.set(tab.id, freshSession(tab.id));');
+  const resume = source.indexOf('resumeSessionFlush(tab.id);');
+
+  assert.ok(idbDelete >= 0);
+  assert.ok(legacyDelete > idbDelete);
+  assert.ok(fresh > legacyDelete);
+  assert.ok(resume > fresh);
+  assert.equal(source.includes('} finally {'), false);
 });
