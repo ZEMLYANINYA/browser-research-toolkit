@@ -452,6 +452,26 @@ recoverable, and continuity diagnostics make observable producer gaps explicit.
 Persisted research data is not silently deleted merely because the side panel closes or the tab lifecycle ends. Explicit CLEAR
 removes the current durable session data transactionally.
 
+## Real-browser validation
+
+The v0.6 architecture is validated against real Chromium in addition to unit and simulated-browser coverage.
+
+The real-browser smoke suite covers:
+
+- explicit START/STOP capture lifecycle;
+- frame and document provenance across iframe navigation;
+- trusted DOM-to-network correlation;
+- explicit optional third-party source host-permission flow;
+- IndexedDB-backed recovery after a real Manifest V3 service-worker execution-context restart;
+- Deep-mode `chrome.debugger` attachment and `Debugger.scriptParsed` evidence;
+- real `Network.webSocketCreated`, `Network.webSocketFrameSent`, and `Network.webSocketFrameReceived` CDP evidence.
+
+Service-worker recovery restores durable session state from IndexedDB. It does not claim lossless observation during worker
+termination. Page-producer sequence gaps remain explicit evidence when they occur.
+
+Real Chromium validation also established the protocol shape used by the CDP WebSocket sanitizer: event names use
+`Network.webSocket*` casing, while frame opcode and payload metadata are carried under `params.response`.
+
 ## Extension boundaries
 
 The public extension is not intended to contain active exploitation, bypass, stealth, fingerprint spoofing, credential capture,
