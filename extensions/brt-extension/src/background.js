@@ -16,6 +16,7 @@ import { createRunId, validateRuntimeMessage } from './protocol.js';
 import { classifySourceFetchPolicy } from './source-policy.js';
 import { TaskRunner, TaskError } from './task-runner.js';
 import { createControlQueryHandlers } from './control-query-handlers.js';
+import { createControlCommandHandlers } from './control-command-handlers.js';
 import { createSessionPersistence } from './session-persistence.js';
 import { createIndexedDbPersistence } from './indexeddb-persistence.js';
 import { flushSessionToIndexedDb } from './indexeddb-session-flush.js';
@@ -1578,6 +1579,15 @@ const controlQueryHandlers = createControlQueryHandlers({
   taskRunner,
   getAntiBotAnalysis
 });
+const controlCommandHandlers = createControlCommandHandlers({
+  activeTab,
+  loadSession,
+  sendCommand,
+  sessionGeneration,
+  pushCapped,
+  pushTimeline,
+  scheduleFlush
+});
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
@@ -1709,6 +1719,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (queryHandler) {
       sendResponse(await queryHandler(message));
+      return;
+    }
+    const commandHandler = controlCommandHandlers[message?.type];
+
+    if (commandHandler) {
+      sendResponse(await commandHandler(message));
       return;
     }
     if (message?.type === 'BRT_START') {
@@ -1995,34 +2011,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (message?.type === 'BRT_REFRESH_SOURCES') {
-      const tab = await activeTab();
-      if (tab?.id) await sendCommand(tab.id, 'REFRESH_SOURCES', sessionGeneration(tab.id));
-      sendResponse({ ok: true });
-      return;
-    }
-
-    if (message?.type === 'BRT_WATCH_ADD') {
-      const tab = await activeTab();
-      if (tab?.id && /^window(?:\.[A-Za-z_$][\w$]*)+$/.test(message.path || '')) await sendCommand(tab.id, 'WATCH_ADD', sessionGeneration(tab.id), { path: message.path });
-      sendResponse({ ok: true });
-      return;
-    }
-
-    if (message?.type === 'BRT_MARK') {
-      const tab = await activeTab();
-      const session = tab?.id ? await loadSession(tab.id) : null;
-      if (!session?.running || session.importedReadOnly) throw new Error('Markers require an active live session.');
-      const marker = { markerId: `mark_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, text: String(message.text || 'marker').slice(0, 200), category: String(message.category || 'experiment').slice(0, 50), eventId: `evt_${Date.now().toString(36)}_${++session.sequence}`, sequence: session.sequence, sessionId: session.sessionId, documentId: session.documents.at(-1)?.documentId || 'unknown', wallTime: Date.now(), provenance: { collector: 'side-panel', transport: 'chrome.runtime', integrity: 'extension-controlled' } };
-      session.markers = Array.isArray(session.markers) ? session.markers : [];
-      pushCapped(session.markers, marker, 300);
-      pushTimeline(session, { ...marker, kind: 'marker', label: `MARK: ${marker.text}`, data: marker });
-      scheduleFlush(tab.id);
-      sendResponse({ ok: true, marker });
-      return;
-    }
-
-
     if (message?.type === 'BRT_EXPORT_SESSION') {
       const tab = await activeTab();
 
@@ -2061,18 +2049,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
 
-
-    if (message?.type === 'BRT_LABEL_CORRELATION') {
-      const tab = await activeTab();
-      const session = tab?.id ? await loadSession(tab.id) : null;
-      const item = session?.correlations?.find(relationship => relationship.relationshipId === message.relationshipId);
-      if (!item) throw new Error('Correlation record not found.');
-      item.manualStatus = message.status === 'not-related' ? 'not-related' : 'related';
-      item.manualLabelAt = Date.now();
-      if (session) scheduleFlush(tab.id);
-      sendResponse({ ok: true });
-      return;
-    }
 
     if (message?.type === 'BRT_IMPORT_SESSION') {
       const tab = await activeTab();
