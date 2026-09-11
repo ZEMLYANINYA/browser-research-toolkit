@@ -52,20 +52,21 @@ test('loading failures retain bounded diagnostic metadata', () => {
 
 test('WebSocket events retain payload length without payload contents', () => {
   const result = sanitizeCdpEvent(
-    'Network.WebSocketFrameReceived',
+    'Network.webSocketFrameReceived',
     {
       requestId: 'ws1',
-      url: 'wss://example.test/socket?token=secret',
-      opcode: 1,
       timestamp: 5,
-      payloadData: 'TOP_SECRET_PAYLOAD'
+      response: {
+        opcode: 1,
+        payloadData: 'TOP_SECRET_PAYLOAD'
+      }
     }
   );
 
   assert.equal(result.websocket.requestId, 'ws1');
+  assert.equal(result.websocket.opcode, 1);
   assert.equal(result.websocket.payloadLength, 18);
   assert.equal('payloadData' in result.websocket, false);
-  assert.doesNotMatch(result.websocket.url, /secret/);
 });
 
 test('unknown CDP events degrade to bounded metadata', () => {
