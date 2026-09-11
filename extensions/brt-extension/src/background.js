@@ -26,6 +26,7 @@ import { createEntityDeltaQueue } from './entity-delta-queue.js';
 import { createPersistedRecord } from './session-persistence-model.js';
 import { createPersistedEntity, sourceEntityKey } from './session-entity-model.js';
 import { observePageProducerSequence } from './capture-continuity.js';
+import { createCaptureRouting } from './capture-routing.js';
 
 const sessions = new Map();
 const cdpTabs = new Set();
@@ -42,6 +43,7 @@ const taskAccounting = new Map();
 const antiBotAnalysisCache = new Map();
 const sessionPersistence = createSessionPersistence(chrome.storage.local);
 const indexedDbPersistence = createIndexedDbPersistence(globalThis.indexedDB);
+const { injectBridge, injectAgent } = createCaptureRouting(chrome);
 
 const DEFAULT_COUNTERS = Object.freeze({
   requests: 0, responses: 0, bodies: 0, domEvents: 0, navigations: 0, sources: 0,
@@ -1520,63 +1522,6 @@ async function activeTab() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   return tab;
 }
-
-function captureScriptTarget(
-  tabId,
-  frameId = null,
-  documentId = null
-) {
-  if (typeof documentId === 'string' && documentId) {
-    return {
-      tabId,
-      documentIds: [documentId]
-    };
-  }
-
-  if (Number.isInteger(frameId)) {
-    return {
-      tabId,
-      frameIds: [frameId]
-    };
-  }
-
-  return {
-    tabId,
-    allFrames: true
-  };
-}
-
-async function injectBridge(
-  tabId,
-  frameId = null,
-  documentId = null
-) {
-  await chrome.scripting.executeScript({
-    target: captureScriptTarget(
-      tabId,
-      frameId,
-      documentId
-    ),
-    files: ['src/content-bridge.js']
-  });
-}
-
-async function injectAgent(
-  tabId,
-  frameId = null,
-  documentId = null
-) {
-  await chrome.scripting.executeScript({
-    target: captureScriptTarget(
-      tabId,
-      frameId,
-      documentId
-    ),
-    files: ['dist/page-agent.js'],
-    world: 'MAIN'
-  });
-}
-
 
 async function sendCommand(
   tabId,

@@ -7,6 +7,11 @@ const background = fs.readFileSync(
   'utf8'
 );
 
+const captureRouting = fs.readFileSync(
+  new URL('../src/capture-routing.js', import.meta.url),
+  'utf8'
+);
+
 const manifest = JSON.parse(
   fs.readFileSync(
     new URL('../manifest.json', import.meta.url),
@@ -20,7 +25,7 @@ test('capture scripts are not declaratively injected', () => {
 
 test('initial START injects only the isolated bridge into all existing frames', () => {
   assert.match(
-    background,
+    captureRouting,
     /return\s+\{\s*tabId,\s*allFrames:\s*true\s*\}/
   );
 
@@ -56,12 +61,12 @@ test('bridge-ready recovery targets the announcing frame', () => {
 
 test('page agent remains MAIN-world and bridge remains isolated-world', () => {
   assert.match(
-    background,
+    captureRouting,
     /files:\s*\['dist\/page-agent\.js'\][\s\S]*?world:\s*'MAIN'/
   );
 
   assert.match(
-    background,
+    captureRouting,
     /files:\s*\['src\/content-bridge\.js'\]/
   );
 });
@@ -324,7 +329,7 @@ test('bridge-ready injection is bound to the announcing document', () => {
   );
 
   assert.match(
-    background,
+    captureRouting,
     /documentIds:\s*\[documentId\]/
   );
 });
