@@ -7,3 +7,4 @@ research_*.json
 
 # Local research/baseline artifacts
 artifacts/
+test-results/
