@@ -15,8 +15,7 @@ import { analyzeAntiBot } from './antibot-analyzer.js';
 import { createRunId, validateRuntimeMessage } from './protocol.js';
 import { classifySourceFetchPolicy } from './source-policy.js';
 import { TaskRunner, TaskError } from './task-runner.js';
-import { generateParserBlueprint } from './parser-blueprint.js';
-import { renderParserBlueprintMarkdown } from './parser-blueprint-markdown.js';
+import { createControlQueryHandlers } from './control-query-handlers.js';
 import { createSessionPersistence } from './session-persistence.js';
 import { createIndexedDbPersistence } from './indexeddb-persistence.js';
 import { flushSessionToIndexedDb } from './indexeddb-session-flush.js';
@@ -27,10 +26,10 @@ import { createPersistedRecord } from './session-persistence-model.js';
 import { createPersistedEntity, sourceEntityKey } from './session-entity-model.js';
 import { observePageProducerSequence } from './capture-continuity.js';
 import { createCaptureRouting } from './capture-routing.js';
-import { classifyNetwork, graphqlFinding, endpointFamily, buildApiAnalysis } from './network-analysis.js';
+import { classifyNetwork, graphqlFinding, endpointFamily } from './network-analysis.js';
 import { sanitizeCdpEvent } from './cdp-event-sanitizer.js';
 import { timelineLabel } from './timeline-label.js';
-import { searchSession } from './session-search.js';
+
 
 const sessions = new Map();
 const cdpTabs = new Set();
@@ -1573,6 +1572,12 @@ chrome.debugger?.onDetach?.addListener((source, reason) => {
   scheduleFlush(tabId);
 });
 
+const controlQueryHandlers = createControlQueryHandlers({
+  activeTab,
+  loadSession,
+  taskRunner,
+  getAntiBotAnalysis
+});
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
@@ -1699,12 +1704,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (message?.type === 'BRT_GET_ACTIVE_TAB') {
-      const tab = await activeTab();
-      sendResponse({ tab: tab ? { id: tab.id, title: tab.title, url: tab.url } : null });
+
+    const queryHandler = controlQueryHandlers[message?.type];
+
+    if (queryHandler) {
+      sendResponse(await queryHandler(message));
       return;
     }
-
     if (message?.type === 'BRT_START') {
       const tab = await activeTab();
       if (!tab?.id || !/^https?:/i.test(tab.url || '')) throw new Error('Open a normal http/https page first.');
@@ -2016,12 +2022,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (message?.type === 'BRT_GET_SESSION') {
-      const tab = await activeTab();
-      if (!tab?.id) return sendResponse({ session: null });
-      sendResponse({ session: await loadSession(tab.id) });
-      return;
-    }
 
     if (message?.type === 'BRT_EXPORT_SESSION') {
       const tab = await activeTab();
@@ -2052,31 +2052,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (message?.type === 'BRT_GET_PARSER_BLUEPRINT') {
-      const tab = await activeTab();
 
-      if (!tab?.id) {
-        sendResponse({ blueprint: null, markdown: '' });
-        return;
-      }
-
-      const session = await loadSession(tab.id);
-      const blueprint = generateParserBlueprint(session);
-      const markdown =
-        renderParserBlueprintMarkdown(blueprint);
-
-      sendResponse({
-        blueprint,
-        markdown
-      });
-      return;
-    }
-
-    if (message?.type === 'BRT_GET_TASKS') {
-      const tab = await activeTab();
-      sendResponse({ tasks: tab?.id == null ? [] : taskRunner.list({ tabId: tab.id }) });
-      return;
-    }
 
     if (message?.type === 'BRT_CANCEL_TASK') {
       if (typeof message.taskId !== 'string' || message.taskId.length > 120) throw new TaskError('INVALID_TASK_ID', 'Invalid task id.');
@@ -2084,26 +2060,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (message?.type === 'BRT_SEARCH') {
-      const tab = await activeTab();
-      if (!tab?.id) return sendResponse({ results: [] });
-      const session = await loadSession(tab.id);
-      sendResponse({ results: searchSession(session, message.query || '', message.scopes || {}) });
-      return;
-    }
 
-    if (message?.type === 'BRT_GET_DIAGNOSTICS') {
-      const tab = await activeTab();
-      const session = tab?.id ? await loadSession(tab.id) : null;
-      sendResponse({
-        diagnostics: session?.diagnostics || [], correlations: session?.correlations || [],
-        inferences: session?.inferences || [], api: session ? buildApiAnalysis(session) : [],
-        antiBot: session?.antiBot || createAntiBotState(false),
-        antiBotAnalysis: session && tab?.id != null ? getAntiBotAnalysis(tab.id, session) : null,
-        tasks: tab?.id == null ? [] : taskRunner.list({ tabId: tab.id })
-      });
-      return;
-    }
 
     if (message?.type === 'BRT_LABEL_CORRELATION') {
       const tab = await activeTab();

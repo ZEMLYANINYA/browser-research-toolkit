@@ -178,7 +178,7 @@ test('bridge-ready rechecks lifecycle after asynchronous agent injection', () =>
   assert.ok(readyStart >= 0);
 
   const readyEnd = background.indexOf(
-    "if (message?.type === 'BRT_GET_ACTIVE_TAB')",
+    'const queryHandler = controlQueryHandlers[message?.type];',
     readyStart
   );
 
@@ -220,7 +220,7 @@ test('STOP becomes authoritative before awaiting frame teardown', () => {
   assert.ok(stopStart >= 0);
 
   const stopEnd = background.indexOf(
-    "if (message?.type === 'BRT_GET_SESSION')",
+    "if (message?.type === 'BRT_CLEAR')",
     stopStart
   );
 
@@ -342,7 +342,7 @@ test('bridge-ready commands are bound to the announcing document', () => {
   assert.ok(readyStart >= 0);
 
   const readyEnd = background.indexOf(
-    "if (message?.type === 'BRT_GET_ACTIVE_TAB')",
+    'const queryHandler = controlQueryHandlers[message?.type];',
     readyStart
   );
 
@@ -448,7 +448,7 @@ test('bridge-ready watch replay remains top-frame only', () => {
   assert.ok(readyStart >= 0);
 
   const readyEnd = background.indexOf(
-    "if (message?.type === 'BRT_GET_ACTIVE_TAB')",
+    'const queryHandler = controlQueryHandlers[message?.type];',
     readyStart
   );
 

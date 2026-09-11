@@ -91,7 +91,7 @@ test('failed IndexedDB writes force a bounded session rebase', () => {
 });
 test('session export flushes before reading the durable IndexedDB snapshot', () => {
   const start = background.indexOf("if (message?.type === 'BRT_EXPORT_SESSION') {");
-  const end = background.indexOf("if (message?.type === 'BRT_GET_PARSER_BLUEPRINT') {", start);
+  const end = background.indexOf("if (message?.type === 'BRT_CANCEL_TASK') {", start);
 
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
