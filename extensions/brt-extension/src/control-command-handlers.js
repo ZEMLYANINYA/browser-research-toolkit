@@ -1,3 +1,4 @@
+import { TaskError } from './task-runner.js';
 export function createControlCommandHandlers({
   activeTab,
   loadSession,
@@ -5,7 +6,8 @@ export function createControlCommandHandlers({
   sessionGeneration,
   pushCapped,
   pushTimeline,
-  scheduleFlush
+  scheduleFlush,
+  taskRunner
 }) {
   if (typeof activeTab !== 'function') throw new TypeError('activeTab is required.');
   if (typeof loadSession !== 'function') throw new TypeError('loadSession is required.');
@@ -14,6 +16,7 @@ export function createControlCommandHandlers({
   if (typeof pushCapped !== 'function') throw new TypeError('pushCapped is required.');
   if (typeof pushTimeline !== 'function') throw new TypeError('pushTimeline is required.');
   if (typeof scheduleFlush !== 'function') throw new TypeError('scheduleFlush is required.');
+  if (!taskRunner || typeof taskRunner.cancel !== 'function') throw new TypeError('taskRunner.cancel is required.');
 
   return Object.freeze({
     BRT_REFRESH_SOURCES: async () => {
@@ -92,6 +95,24 @@ export function createControlCommandHandlers({
       return { ok: true, marker };
     },
 
+    BRT_CANCEL_TASK: async message => {
+      if (
+        typeof message.taskId !== 'string' ||
+        message.taskId.length > 120
+      ) {
+        throw new TaskError(
+          'INVALID_TASK_ID',
+          'Invalid task id.'
+        );
+      }
+
+      return {
+        ok: taskRunner.cancel(
+          message.taskId,
+          'Cancelled by user.'
+        )
+      };
+    },
     BRT_LABEL_CORRELATION: async message => {
       const tab = await activeTab();
       const session = tab?.id

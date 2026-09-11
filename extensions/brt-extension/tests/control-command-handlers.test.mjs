@@ -17,7 +17,8 @@ function fixture({ tab = { id: 7 } } = {}) {
     commands: [],
     flushes: [],
     capped: [],
-    timeline: []
+    timeline: [],
+    cancellations: []
   };
 
   const handlers = createControlCommandHandlers({
@@ -39,6 +40,12 @@ function fixture({ tab = { id: 7 } } = {}) {
     },
     scheduleFlush: tabId => {
       calls.flushes.push(tabId);
+    },
+    taskRunner: {
+      cancel(taskId, reason) {
+        calls.cancellations.push({ taskId, reason });
+        return true;
+      }
     }
   });
 
@@ -120,6 +127,41 @@ test('MARK rejects stopped and imported sessions', async () => {
   );
 });
 
+test('CANCEL_TASK delegates user cancellation to the task runner', async () => {
+  const { handlers, calls } = fixture();
+
+  assert.deepEqual(
+    await handlers.BRT_CANCEL_TASK({ taskId: 'task-1' }),
+    { ok: true }
+  );
+
+  assert.deepEqual(calls.cancellations, [
+    {
+      taskId: 'task-1',
+      reason: 'Cancelled by user.'
+    }
+  ]);
+});
+
+test('CANCEL_TASK rejects invalid task ids', async () => {
+  const { handlers, calls } = fixture();
+
+  await assert.rejects(
+    handlers.BRT_CANCEL_TASK({ taskId: null }),
+    error =>
+      error?.code === 'INVALID_TASK_ID' &&
+      /Invalid task id/.test(error.message)
+  );
+
+  await assert.rejects(
+    handlers.BRT_CANCEL_TASK({ taskId: 'x'.repeat(121) }),
+    error =>
+      error?.code === 'INVALID_TASK_ID' &&
+      /Invalid task id/.test(error.message)
+  );
+
+  assert.deepEqual(calls.cancellations, []);
+});
 test('LABEL_CORRELATION mutates only the selected relationship and schedules persistence', async () => {
   const { handlers, session, calls } = fixture();
 

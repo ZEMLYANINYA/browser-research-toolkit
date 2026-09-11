@@ -1586,7 +1586,8 @@ const controlCommandHandlers = createControlCommandHandlers({
   sessionGeneration,
   pushCapped,
   pushTimeline,
-  scheduleFlush
+  scheduleFlush,
+  taskRunner
 });
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
@@ -2037,14 +2038,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       sendResponse({ ok: true, session: recovery.session });
-      return;
-    }
-
-
-
-    if (message?.type === 'BRT_CANCEL_TASK') {
-      if (typeof message.taskId !== 'string' || message.taskId.length > 120) throw new TaskError('INVALID_TASK_ID', 'Invalid task id.');
-      sendResponse({ ok: taskRunner.cancel(message.taskId, 'Cancelled by user.') });
       return;
     }
 
