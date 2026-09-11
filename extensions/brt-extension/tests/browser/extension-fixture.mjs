@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const sourceExtensionPath = resolve(here, '..', '..');
 
-async function stageExtension() {
+async function stageExtension({ fixtureHostPermissions = true } = {}) {
   const stagedPath = await mkdtemp(join(tmpdir(), 'brt-extension-smoke-'));
 
   await cp(sourceExtensionPath, stagedPath, {
@@ -17,10 +17,18 @@ async function stageExtension() {
   const manifestPath = join(stagedPath, 'manifest.json');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
-  manifest.host_permissions = [
-    'http://127.0.0.1/*',
-    'http://127.0.0.2/*'
-  ];
+  const fixtureHosts = fixtureHostPermissions === true
+    ? [
+        'http://127.0.0.1/*',
+        'http://127.0.0.2/*'
+      ]
+    : Array.isArray(fixtureHostPermissions)
+      ? fixtureHostPermissions
+      : [];
+
+  if (fixtureHosts.length) {
+    manifest.host_permissions = fixtureHosts;
+  }
 
   await writeFile(
     manifestPath,
@@ -31,15 +39,15 @@ async function stageExtension() {
   return stagedPath;
 }
 
-export async function launchBrtExtension() {
-  const extensionPath = await stageExtension();
+export async function launchBrtExtension(options = {}) {
+  const extensionPath = await stageExtension(options);
 
   let context;
 
   try {
     context = await chromium.launchPersistentContext('', {
       channel: 'chromium',
-      headless: true,
+      headless: options.headless !== false,
       args: [
         '--disable-extensions-except=' + extensionPath,
         '--load-extension=' + extensionPath
