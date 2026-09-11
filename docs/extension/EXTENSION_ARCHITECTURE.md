@@ -127,27 +127,32 @@ The check suite compares page-agent `emit(...)` kinds against this list to catch
 
 ### `src/background.js`
 
-The service worker is the extension composition root.
+The service worker is the extension composition and orchestration root.
 
-Key responsibilities:
+It retains responsibilities that depend on shared mutable session state or browser lifecycle coordination:
 
-- session creation/loading/normalization;
-- authoritative run lifecycle;
-- generation and run-ID assignment;
-- serialized persistent flushes;
-- bounded evidence retention;
-- source indexing;
-- TaskRunner integration;
-- CDP attach/detach and event capture;
-- evidence canonicalization;
+- session creation, loading, and normalization;
+- authoritative run lifecycle, generation, and run-ID assignment;
+- serialized persistent flush and recovery coordination;
+- bounded evidence retention and backpressure;
+- source indexing and TaskRunner integration;
+- page-event canonicalization and orchestration;
 - frame/document provenance and navigation ownership;
-- network classification;
-- candidate correlation;
-- anti-bot state/analysis;
-- diagnostics and runtime search;
-- deterministic Parser Blueprint derivation and Markdown rendering;
+- CDP attach/detach lifecycle and event routing;
+- candidate correlation and anti-bot session analysis;
+- deterministic Parser Blueprint orchestration;
+- Chrome runtime, navigation, debugger, and tab lifecycle listeners;
 - tab cleanup.
 
+Pure or independently testable responsibilities are kept outside the composition root:
+
+- `capture-routing.js` owns on-demand isolated-world bridge and MAIN-world agent injection targeting;
+- `network-analysis.js` owns network classification, GraphQL metadata extraction, endpoint-family normalization, and API-family analysis;
+- `cdp-event-sanitizer.js` converts raw CDP events into bounded sanitized evidence shapes;
+- `timeline-label.js` formats deterministic timeline labels;
+- `session-search.js` performs bounded search across retained session evidence.
+
+The split is intentionally conservative. Persistence lifecycle, source collection, page-event handling, CDP lifecycle, and Chrome listeners remain in `background.js` because they coordinate mutable session state and browser APIs rather than acting as independent pure services.
 The service worker never treats `agent-status` as authority over whether the BRT run exists. `session.running` and `runState`
 are extension-controlled. `agentActive` is diagnostic observation only.
 

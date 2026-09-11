@@ -15,6 +15,7 @@
 - Session export now drains pending persistence work and reconstructs the exported session from durable IndexedDB state.
 - Session START, IMPORT, STOP, CLEAR, and tab-close lifecycle paths now coordinate explicitly with durable persistence.
 - Bulk source, HTML, and runtime state is persisted independently from the bounded session header instead of requiring full session rewrites.
+- Split independently testable capture routing, network analysis, CDP event sanitization, timeline-label formatting, and session search out of the MV3 service-worker composition root.
 
 ### Reliability
 
@@ -29,6 +30,7 @@
 - Added record/entity delta-queue ordering, tombstone, requeue, and failure tests.
 - Added a service-worker recovery fixture covering START -> events -> lifecycle break -> recovery -> producer gap -> STOP -> EXPORT.
 - Added producer-continuity tests for independent streams, gaps, duplicate/out-of-order events, bounded history, and cursor eviction.
+- Added behavioral coverage for extracted capture routing, network-analysis helpers, CDP event sanitization, timeline-label formatting, and bounded session search.
 
 ## 0.5.0 - 2026-09-01
 
