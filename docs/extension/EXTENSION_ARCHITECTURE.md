@@ -150,9 +150,11 @@ Pure or independently testable responsibilities are kept outside the composition
 - `network-analysis.js` owns network classification, GraphQL metadata extraction, endpoint-family normalization, and API-family analysis;
 - `cdp-event-sanitizer.js` converts raw CDP events into bounded sanitized evidence shapes;
 - `timeline-label.js` formats deterministic timeline labels;
-- `session-search.js` performs bounded search across retained session evidence.
+- `session-search.js` performs bounded search across retained session evidence;
+- `control-query-handlers.js` owns read-only side-panel control requests such as active-tab/session reads, task listing, search, diagnostics, and Parser Blueprint generation;
+- `control-command-handlers.js` owns bounded side-panel mutations and commands such as source refresh, runtime watches, markers, correlation labels, and explicit task cancellation.
 
-The split is intentionally conservative. Persistence lifecycle, source collection, page-event handling, CDP lifecycle, and Chrome listeners remain in `background.js` because they coordinate mutable session state and browser APIs rather than acting as independent pure services.
+The split is intentionally conservative. `background.js` remains the composition and orchestration root for trust-boundary capture ingress, authoritative START/STOP/CLEAR lifecycle transitions, persistence and recovery coordination, optional host-permission state, durable import/export, source collection, CDP lifecycle, and Chrome runtime/navigation/debugger/tab listeners. These paths coordinate mutable session state and browser APIs and are intentionally not extracted merely to reduce file size.
 The service worker never treats `agent-status` as authority over whether the BRT run exists. `session.running` and `runState`
 are extension-controlled. `agentActive` is diagnostic observation only.
 
