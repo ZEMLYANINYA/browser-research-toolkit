@@ -15,8 +15,8 @@ import { analyzeAntiBot } from './antibot-analyzer.js';
 import { createRunId, validateRuntimeMessage } from './protocol.js';
 import { classifySourceFetchPolicy } from './source-policy.js';
 import { TaskRunner, TaskError } from './task-runner.js';
-import { generateParserBlueprint } from './parser-blueprint.js';
-import { renderParserBlueprintMarkdown } from './parser-blueprint-markdown.js';
+import { createControlQueryHandlers } from './control-query-handlers.js';
+import { createControlCommandHandlers } from './control-command-handlers.js';
 import { createSessionPersistence } from './session-persistence.js';
 import { createIndexedDbPersistence } from './indexeddb-persistence.js';
 import { flushSessionToIndexedDb } from './indexeddb-session-flush.js';
@@ -26,6 +26,11 @@ import { createEntityDeltaQueue } from './entity-delta-queue.js';
 import { createPersistedRecord } from './session-persistence-model.js';
 import { createPersistedEntity, sourceEntityKey } from './session-entity-model.js';
 import { observePageProducerSequence } from './capture-continuity.js';
+import { createCaptureRouting } from './capture-routing.js';
+import { classifyNetwork, graphqlFinding, endpointFamily } from './network-analysis.js';
+import { sanitizeCdpEvent } from './cdp-event-sanitizer.js';
+import { timelineLabel } from './timeline-label.js';
+
 
 const sessions = new Map();
 const cdpTabs = new Set();
@@ -42,6 +47,7 @@ const taskAccounting = new Map();
 const antiBotAnalysisCache = new Map();
 const sessionPersistence = createSessionPersistence(chrome.storage.local);
 const indexedDbPersistence = createIndexedDbPersistence(globalThis.indexedDB);
+const { injectBridge, injectAgent } = createCaptureRouting(chrome);
 
 const DEFAULT_COUNTERS = Object.freeze({
   requests: 0, responses: 0, bodies: 0, domEvents: 0, navigations: 0, sources: 0,
@@ -713,35 +719,6 @@ function diagnostic(session, kind, detail = {}) {
   pushCapped(session.diagnostics, { at: now, kind, ...detail }, LIMITS.maxDiagnostics);
 }
 
-function classifyNetwork(data, pageUrl = '') {
-  const url = String(data?.url || '');
-  const lower = url.toLowerCase();
-  const antiBot = classifyAntiBotRecord({ kind: 'network-request', data }).isAntiBotSignal;
-  const analytics = /analytics|telemetry|collect|pixel|beacon|gtag|webvisor|pagead|doubleclick|rmkt|ccm|\/wa\/|\/tracking\//.test(lower);
-  const bodyText = typeof data?.body === 'string' ? data.body : '';
-  const graphql = /graphql/i.test(url) || /operationName|query\s*[:=]/i.test(bodyText);
-  return {
-    classification: antiBot ? 'anti-bot-signal' : analytics ? 'analytics' : graphql ? 'graphql' : /\.((js|css|png|jpg|svg|woff2?)(\?|$))/i.test(url) ? 'static-asset' : 'unknown',
-    firstParty: (() => { try { return new URL(url).hostname === new URL(pageUrl || url).hostname; } catch { return null; } })()
-  };
-}
-
-function graphqlFinding(data) {
-  const body = data?.body;
-  if (!body || typeof body !== 'string') return null;
-  try {
-    const parsed = JSON.parse(body);
-    const query = parsed.query || '';
-    const operation = parsed.operationName || (query.match(/(?:query|mutation|subscription)\s+([A-Za-z0-9_]+)/)?.[1] || null);
-    if (!operation && !parsed.extensions?.persistedQuery) return null;
-    return { operationName: operation, operationType: query.match(/^(?:\s*)(query|mutation|subscription)/)?.[1] || 'unknown', variableNames: Object.keys(parsed.variables || {}), persistedQueryHash: parsed.extensions?.persistedQuery?.sha256Hash || null };
-  } catch { return null; }
-}
-
-function endpointFamily(url) {
-  try { const parsed = new URL(url); return `${parsed.pathname.replace(/\/(?:\d+|[a-f0-9]{8,})\b/gi, '/{id}')}`; } catch { return url; }
-}
-
 function updateInferences(session) {
   const requests = session.network.filter(item => item.kind === 'network-request' && item.data?.classification !== 'analytics' && item.data?.firstParty !== false);
   const families = new Map();
@@ -751,16 +728,6 @@ function updateInferences(session) {
     if (existing) { existing.observations = count; existing.updatedAt = Date.now(); continue; }
     pushCapped(session.inferences, { hypothesis: 'repeated endpoint family', family, observations: count, evidence: ['same normalized path observed at least three times'], counterEvidence: ['request repetition alone does not establish polling or application semantics'], confidence: 0.42, ruleVersion: 'endpoint-repeat-v1', status: 'candidate', createdAt: Date.now() }, 300);
   }
-}
-
-function buildApiAnalysis(session) {
-  const families = new Map();
-  for (const item of session.network.filter(record => record.kind === 'network-request')) {
-    const data = item.data || {}; const key = `${data.method || 'GET'} ${data.endpointFamily || data.url || 'unknown'}`;
-    const family = families.get(key) || { key, method: data.method || 'GET', family: data.endpointFamily || data.url, count: 0, statuses: [], contentTypes: [], queryKeys: [], graphqlOperations: new Set(), firstParty: data.firstParty, firstSeen: item.wallTime, lastSeen: item.wallTime };
-    family.count++; family.lastSeen = item.wallTime; if (data.graphql?.operationName) family.graphqlOperations.add(data.graphql.operationName); families.set(key, family);
-  }
-  return [...families.values()].map(family => ({ ...family, graphqlOperations: [...family.graphqlOperations] }));
 }
 
 function staticFindings(text, source) {
@@ -794,106 +761,6 @@ function pushTimeline(session, item) {
 
   return result;
 }
-
-function sanitizeCdpEvent(method, params = {}) {
-  const safe = { method };
-  if (method === 'Network.requestWillBeSent') {
-    safe.request = {
-      requestId: params.requestId,
-      loaderId: params.loaderId,
-      documentURL: sanitizeNavigationUrl(params.documentURL),
-      url: sanitizeNavigationUrl(params.request?.url),
-      method: params.request?.method,
-      resourceType: params.type,
-      timestamp: params.timestamp,
-      initiator: {
-        type: params.initiator?.type,
-        url: sanitizeNavigationUrl(params.initiator?.url),
-        lineNumber: params.initiator?.lineNumber
-      }
-    };
-  } else if (method === 'Network.responseReceived') {
-    safe.response = {
-      requestId: params.requestId,
-      url: sanitizeNavigationUrl(params.response?.url),
-      status: params.response?.status,
-      mimeType: params.response?.mimeType,
-      encodedDataLength: params.response?.encodedDataLength,
-      resourceType: params.type
-    };
-  } else if (method === 'Network.loadingFailed') {
-    safe.failure = {
-      requestId: params.requestId,
-      errorText: trimText(params.errorText || '', 500),
-      canceled: Boolean(params.canceled),
-      blockedReason: params.blockedReason || null,
-      resourceType: params.type || null
-    };
-  } else if (method === 'Debugger.scriptParsed') {
-    safe.script = {
-      scriptId: params.scriptId,
-      url: sanitizeNavigationUrl(params.url),
-      sourceMapURL: sanitizeNavigationUrl(params.sourceMapURL),
-      startLine: params.startLine,
-      startColumn: params.startColumn,
-      endLine: params.endLine,
-      endColumn: params.endColumn,
-      length: params.length,
-      hash: trimText(params.hash || '', 160),
-      isModule: Boolean(params.isModule)
-    };
-  } else if (method === 'Runtime.exceptionThrown') {
-    const detail = params.exceptionDetails || {};
-    safe.exception = {
-      exceptionId: detail.exceptionId,
-      text: trimText(detail.text || '', 1000),
-      url: sanitizeNavigationUrl(detail.url),
-      lineNumber: detail.lineNumber,
-      columnNumber: detail.columnNumber,
-      timestamp: params.timestamp
-    };
-  } else if (method === 'Page.frameNavigated') {
-    safe.frame = {
-      id: params.frame?.id,
-      parentId: params.frame?.parentId || null,
-      loaderId: params.frame?.loaderId,
-      url: sanitizeNavigationUrl(params.frame?.url),
-      securityOrigin: sanitizeNavigationUrl(params.frame?.securityOrigin)
-    };
-  } else if (/WebSocket/.test(method)) {
-    safe.websocket = {
-      requestId: params.requestId,
-      url: sanitizeNavigationUrl(params.url),
-      opcode: params.opcode,
-      timestamp: params.timestamp,
-      payloadLength: params.payloadData?.length || 0
-    };
-  } else {
-    safe.metadata = { requestId: params.requestId, targetId: params.targetId, frameId: params.frameId, type: params.type };
-  }
-  return safe;
-}
-
-function timelineLabel(payload) {
-  const d = payload.data || {};
-  switch (payload.kind) {
-    case 'network-request': return `${d.transport || 'net'} ${d.method || ''} ${d.url || ''}`;
-    case 'network-response': return `${d.transport || 'net'} response ${d.status ?? ''} ${d.url || ''}`;
-    case 'network-body': return `body ${d.url || ''}`;
-    case 'dom-event': return `${d.type || 'event'} ${d.target?.selectorHint || ''}`;
-    case 'form-submit': return `${d.method || 'GET'} form ${d.action || ''} · ${d.trigger || 'native'}`;
-    case 'navigation': return `${d.type || 'navigation'} ${d.to || ''}`;
-    case 'source-url': return `script ${d.url || ''}`;
-    case 'source-inline': return d.label || 'inline script';
-    case 'antibot-dom-signal': return `anti-bot DOM ${Array.isArray(d.signals) ? d.signals.join(', ') : ''}`;
-    case 'connection-lifecycle': return `${d.transport || 'connection'} ${d.state || 'state'} ${d.url || ''}`;
-    case 'timer-schedule': return `${d.timerType || 'timer'} ${d.delay ?? ''}ms${d.callbackKeywords?.length ? ` · ${d.callbackKeywords.join(',')}` : ''}`;
-    case 'timer-fire': return `${d.timerType || 'timer'} fired${d.callbackKeywords?.length ? ` · ${d.callbackKeywords.join(',')}` : ''}`;
-    case 'cdp-event': return `CDP ${d.method || 'event'}${d.request?.url ? ` · ${d.request.url}` : d.response?.url ? ` · ${d.response.url}` : d.script?.url ? ` · ${d.script.url}` : d.frame?.url ? ` · ${d.frame.url}` : ''}`;
-    default: return payload.kind;
-  }
-}
-
 
 async function sha256Text(text) {
   try {
@@ -1521,63 +1388,6 @@ async function activeTab() {
   return tab;
 }
 
-function captureScriptTarget(
-  tabId,
-  frameId = null,
-  documentId = null
-) {
-  if (typeof documentId === 'string' && documentId) {
-    return {
-      tabId,
-      documentIds: [documentId]
-    };
-  }
-
-  if (Number.isInteger(frameId)) {
-    return {
-      tabId,
-      frameIds: [frameId]
-    };
-  }
-
-  return {
-    tabId,
-    allFrames: true
-  };
-}
-
-async function injectBridge(
-  tabId,
-  frameId = null,
-  documentId = null
-) {
-  await chrome.scripting.executeScript({
-    target: captureScriptTarget(
-      tabId,
-      frameId,
-      documentId
-    ),
-    files: ['src/content-bridge.js']
-  });
-}
-
-async function injectAgent(
-  tabId,
-  frameId = null,
-  documentId = null
-) {
-  await chrome.scripting.executeScript({
-    target: captureScriptTarget(
-      tabId,
-      frameId,
-      documentId
-    ),
-    files: ['dist/page-agent.js'],
-    world: 'MAIN'
-  });
-}
-
-
 async function sendCommand(
   tabId,
   command,
@@ -1763,46 +1573,22 @@ chrome.debugger?.onDetach?.addListener((source, reason) => {
   scheduleFlush(tabId);
 });
 
-function searchSession(session, query, scopes) {
-  const isRegex = Boolean(scopes.regex);
-  let matcher;
-  try { matcher = isRegex ? new RegExp(query, scopes.caseSensitive ? '' : 'i') : null; } catch { matcher = null; }
-  const results = [];
-  const add = (scope, label, text, meta = {}) => {
-    if (results.length >= LIMITS.maxSearchResults) return;
-    const hay = String(text || '');
-    const match = matcher ? matcher.exec(hay) : hay.toLowerCase().indexOf(query.toLowerCase());
-    const idx = matcher ? (match ? match.index : -1) : match;
-    if (idx < 0) return;
-    const start = Math.max(0, idx - 220);
-    const end = Math.min(hay.length, idx + query.length + 420);
-    results.push({ scope, label, snippet: hay.slice(start, end), ...meta });
-  };
-
-  if (scopes.html) add('HTML', session.pageUrl || 'document', session.html);
-  if (scopes.javascript) {
-    for (const src of session.sources) add('JAVASCRIPT', src.label || src.url || src.id, src.text, { url: src.url, sourceType: src.type });
-  }
-  if (scopes.network) {
-    for (const item of session.network) {
-      const d = item.data || {};
-      add('NETWORK', d.url || item.kind, JSON.stringify(d), { kind: item.kind, requestId: d.requestId });
-    }
-  }
-  if (scopes.runtime) {
-    for (const entry of session.runtime) add('RUNTIME', entry.key, `${entry.key} = ${entry.value}`, { valueType: entry.type });
-  }
-  if (scopes.timeline !== false) {
-    for (const item of session.timeline) add('TIMELINE', item.label, JSON.stringify(item.data), { kind: item.kind, sequence: item.sequence });
-  }
-  if (scopes.diagnostics) {
-    for (const item of session.diagnostics) add('DIAGNOSTICS', item.kind, JSON.stringify(item));
-    for (const item of session.correlations) add('CORRELATION', item.ruleId, JSON.stringify(item));
-    for (const item of session.antiBot?.signals || []) add('ANTI-BOT', (item.categories || []).join(', ') || item.kind, JSON.stringify(item));
-  }
-  return results;
-}
-
+const controlQueryHandlers = createControlQueryHandlers({
+  activeTab,
+  loadSession,
+  taskRunner,
+  getAntiBotAnalysis
+});
+const controlCommandHandlers = createControlCommandHandlers({
+  activeTab,
+  loadSession,
+  sendCommand,
+  sessionGeneration,
+  pushCapped,
+  pushTimeline,
+  scheduleFlush,
+  taskRunner
+});
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });
@@ -1929,12 +1715,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (message?.type === 'BRT_GET_ACTIVE_TAB') {
-      const tab = await activeTab();
-      sendResponse({ tab: tab ? { id: tab.id, title: tab.title, url: tab.url } : null });
+
+    const queryHandler = controlQueryHandlers[message?.type];
+
+    if (queryHandler) {
+      sendResponse(await queryHandler(message));
       return;
     }
+    const commandHandler = controlCommandHandlers[message?.type];
 
+    if (commandHandler) {
+      sendResponse(await commandHandler(message));
+      return;
+    }
     if (message?.type === 'BRT_START') {
       const tab = await activeTab();
       if (!tab?.id || !/^https?:/i.test(tab.url || '')) throw new Error('Open a normal http/https page first.');
@@ -2219,40 +2012,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (message?.type === 'BRT_REFRESH_SOURCES') {
-      const tab = await activeTab();
-      if (tab?.id) await sendCommand(tab.id, 'REFRESH_SOURCES', sessionGeneration(tab.id));
-      sendResponse({ ok: true });
-      return;
-    }
-
-    if (message?.type === 'BRT_WATCH_ADD') {
-      const tab = await activeTab();
-      if (tab?.id && /^window(?:\.[A-Za-z_$][\w$]*)+$/.test(message.path || '')) await sendCommand(tab.id, 'WATCH_ADD', sessionGeneration(tab.id), { path: message.path });
-      sendResponse({ ok: true });
-      return;
-    }
-
-    if (message?.type === 'BRT_MARK') {
-      const tab = await activeTab();
-      const session = tab?.id ? await loadSession(tab.id) : null;
-      if (!session?.running || session.importedReadOnly) throw new Error('Markers require an active live session.');
-      const marker = { markerId: `mark_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, text: String(message.text || 'marker').slice(0, 200), category: String(message.category || 'experiment').slice(0, 50), eventId: `evt_${Date.now().toString(36)}_${++session.sequence}`, sequence: session.sequence, sessionId: session.sessionId, documentId: session.documents.at(-1)?.documentId || 'unknown', wallTime: Date.now(), provenance: { collector: 'side-panel', transport: 'chrome.runtime', integrity: 'extension-controlled' } };
-      session.markers = Array.isArray(session.markers) ? session.markers : [];
-      pushCapped(session.markers, marker, 300);
-      pushTimeline(session, { ...marker, kind: 'marker', label: `MARK: ${marker.text}`, data: marker });
-      scheduleFlush(tab.id);
-      sendResponse({ ok: true, marker });
-      return;
-    }
-
-    if (message?.type === 'BRT_GET_SESSION') {
-      const tab = await activeTab();
-      if (!tab?.id) return sendResponse({ session: null });
-      sendResponse({ session: await loadSession(tab.id) });
-      return;
-    }
-
     if (message?.type === 'BRT_EXPORT_SESSION') {
       const tab = await activeTab();
 
@@ -2282,70 +2041,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (message?.type === 'BRT_GET_PARSER_BLUEPRINT') {
-      const tab = await activeTab();
 
-      if (!tab?.id) {
-        sendResponse({ blueprint: null, markdown: '' });
-        return;
-      }
-
-      const session = await loadSession(tab.id);
-      const blueprint = generateParserBlueprint(session);
-      const markdown =
-        renderParserBlueprintMarkdown(blueprint);
-
-      sendResponse({
-        blueprint,
-        markdown
-      });
-      return;
-    }
-
-    if (message?.type === 'BRT_GET_TASKS') {
-      const tab = await activeTab();
-      sendResponse({ tasks: tab?.id == null ? [] : taskRunner.list({ tabId: tab.id }) });
-      return;
-    }
-
-    if (message?.type === 'BRT_CANCEL_TASK') {
-      if (typeof message.taskId !== 'string' || message.taskId.length > 120) throw new TaskError('INVALID_TASK_ID', 'Invalid task id.');
-      sendResponse({ ok: taskRunner.cancel(message.taskId, 'Cancelled by user.') });
-      return;
-    }
-
-    if (message?.type === 'BRT_SEARCH') {
-      const tab = await activeTab();
-      if (!tab?.id) return sendResponse({ results: [] });
-      const session = await loadSession(tab.id);
-      sendResponse({ results: searchSession(session, message.query || '', message.scopes || {}) });
-      return;
-    }
-
-    if (message?.type === 'BRT_GET_DIAGNOSTICS') {
-      const tab = await activeTab();
-      const session = tab?.id ? await loadSession(tab.id) : null;
-      sendResponse({
-        diagnostics: session?.diagnostics || [], correlations: session?.correlations || [],
-        inferences: session?.inferences || [], api: session ? buildApiAnalysis(session) : [],
-        antiBot: session?.antiBot || createAntiBotState(false),
-        antiBotAnalysis: session && tab?.id != null ? getAntiBotAnalysis(tab.id, session) : null,
-        tasks: tab?.id == null ? [] : taskRunner.list({ tabId: tab.id })
-      });
-      return;
-    }
-
-    if (message?.type === 'BRT_LABEL_CORRELATION') {
-      const tab = await activeTab();
-      const session = tab?.id ? await loadSession(tab.id) : null;
-      const item = session?.correlations?.find(relationship => relationship.relationshipId === message.relationshipId);
-      if (!item) throw new Error('Correlation record not found.');
-      item.manualStatus = message.status === 'not-related' ? 'not-related' : 'related';
-      item.manualLabelAt = Date.now();
-      if (session) scheduleFlush(tab.id);
-      sendResponse({ ok: true });
-      return;
-    }
 
     if (message?.type === 'BRT_IMPORT_SESSION') {
       const tab = await activeTab();

@@ -11,6 +11,14 @@ const background =
     'utf8'
   );
 
+const controlQueryHandlers =
+  fs.readFileSync(
+    new URL(
+      '../src/control-query-handlers.js',
+      import.meta.url
+    ),
+    'utf8'
+  );
 const panelJs =
   fs.readFileSync(
     new URL(
@@ -30,30 +38,34 @@ const panelHtml =
   );
 
 test(
-  'background exposes Parser Blueprint artifacts on demand',
+  'control query handlers expose Parser Blueprint artifacts on demand',
   () => {
     assert.match(
       background,
+      /createControlQueryHandlers/
+    );
+
+    assert.match(
+      controlQueryHandlers,
       /BRT_GET_PARSER_BLUEPRINT/
     );
 
     assert.match(
-      background,
+      controlQueryHandlers,
       /generateParserBlueprint/
     );
 
     assert.match(
-      background,
+      controlQueryHandlers,
       /renderParserBlueprintMarkdown/
     );
 
     assert.match(
-      background,
-      /sendResponse\s*\(\s*\{[\s\S]*blueprint[\s\S]*markdown/
+      controlQueryHandlers,
+      /return\s*\{[\s\S]*blueprint[\s\S]*markdown/
     );
   }
 );
-
 test(
   'raw session export remains backwards compatible',
   () => {

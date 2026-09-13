@@ -127,27 +127,34 @@ The check suite compares page-agent `emit(...)` kinds against this list to catch
 
 ### `src/background.js`
 
-The service worker is the extension composition root.
+The service worker is the extension composition and orchestration root.
 
-Key responsibilities:
+It retains responsibilities that depend on shared mutable session state or browser lifecycle coordination:
 
-- session creation/loading/normalization;
-- authoritative run lifecycle;
-- generation and run-ID assignment;
-- serialized persistent flushes;
-- bounded evidence retention;
-- source indexing;
-- TaskRunner integration;
-- CDP attach/detach and event capture;
-- evidence canonicalization;
+- session creation, loading, and normalization;
+- authoritative run lifecycle, generation, and run-ID assignment;
+- serialized persistent flush and recovery coordination;
+- bounded evidence retention and backpressure;
+- source indexing and TaskRunner integration;
+- page-event canonicalization and orchestration;
 - frame/document provenance and navigation ownership;
-- network classification;
-- candidate correlation;
-- anti-bot state/analysis;
-- diagnostics and runtime search;
-- deterministic Parser Blueprint derivation and Markdown rendering;
+- CDP attach/detach lifecycle and event routing;
+- candidate correlation and anti-bot session analysis;
+- deterministic Parser Blueprint orchestration;
+- Chrome runtime, navigation, debugger, and tab lifecycle listeners;
 - tab cleanup.
 
+Pure or independently testable responsibilities are kept outside the composition root:
+
+- `capture-routing.js` owns on-demand isolated-world bridge and MAIN-world agent injection targeting;
+- `network-analysis.js` owns network classification, GraphQL metadata extraction, endpoint-family normalization, and API-family analysis;
+- `cdp-event-sanitizer.js` converts raw CDP events into bounded sanitized evidence shapes;
+- `timeline-label.js` formats deterministic timeline labels;
+- `session-search.js` performs bounded search across retained session evidence;
+- `control-query-handlers.js` owns read-only side-panel control requests such as active-tab/session reads, task listing, search, diagnostics, and Parser Blueprint generation;
+- `control-command-handlers.js` owns bounded side-panel mutations and commands such as source refresh, runtime watches, markers, correlation labels, and explicit task cancellation.
+
+The split is intentionally conservative. `background.js` remains the composition and orchestration root for trust-boundary capture ingress, authoritative START/STOP/CLEAR lifecycle transitions, persistence and recovery coordination, optional host-permission state, durable import/export, source collection, CDP lifecycle, and Chrome runtime/navigation/debugger/tab listeners. These paths coordinate mutable session state and browser APIs and are intentionally not extracted merely to reduce file size.
 The service worker never treats `agent-status` as authority over whether the BRT run exists. `session.running` and `runState`
 are extension-controlled. `agentActive` is diagnostic observation only.
 
