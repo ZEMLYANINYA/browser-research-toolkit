@@ -17,6 +17,15 @@ import { classifySourceFetchPolicy } from './source-policy.js';
 import { TaskRunner, TaskError } from './task-runner.js';
 import { generateParserBlueprint } from './parser-blueprint.js';
 import { renderParserBlueprintMarkdown } from './parser-blueprint-markdown.js';
+import { createSessionPersistence } from './session-persistence.js';
+import { createIndexedDbPersistence } from './indexeddb-persistence.js';
+import { flushSessionToIndexedDb } from './indexeddb-session-flush.js';
+import { recoverSessionFromIndexedDb } from './indexeddb-session-recovery.js';
+import { createRecordDeltaQueue } from './record-delta-queue.js';
+import { createEntityDeltaQueue } from './entity-delta-queue.js';
+import { createPersistedRecord } from './session-persistence-model.js';
+import { createPersistedEntity, sourceEntityKey } from './session-entity-model.js';
+import { observePageProducerSequence } from './capture-continuity.js';
 
 const sessions = new Map();
 const cdpTabs = new Set();
@@ -24,10 +33,15 @@ const cdpAttachInFlight = new Map();
 const generationCounters = new Map();
 const sessionLoads = new Map();
 const flushStates = new Map();
+const recordDeltas = new Map();
+const entityDeltas = new Map();
+const indexedDbBootstraps = new Map();
 const pendingSourceTasks = new Map();
 const pendingSourceObservations = new Map();
 const taskAccounting = new Map();
 const antiBotAnalysisCache = new Map();
+const sessionPersistence = createSessionPersistence(chrome.storage.local);
+const indexedDbPersistence = createIndexedDbPersistence(globalThis.indexedDB);
 
 const DEFAULT_COUNTERS = Object.freeze({
   requests: 0, responses: 0, bodies: 0, domEvents: 0, navigations: 0, sources: 0,
@@ -104,6 +118,7 @@ function freshSession(tabId) {
     stopRequested: false,
     generation: 0,
     sequence: 0,
+    continuity: { pageStreams: [] },
     tabId,
     preserveSession: true,
     requestedMode: 'standard',
@@ -147,9 +162,27 @@ async function loadSession(tabId) {
   if (sessionLoads.has(tabId)) return sessionLoads.get(tabId);
 
   const pending = (async () => {
-    const key = `brt_session_${tabId}`;
-    const stored = await chrome.storage.local.get(key);
-    const session = stored[key] || freshSession(tabId);
+    let recovery = null;
+    let recoveryError = null;
+
+    try {
+      recovery = await recoverSessionFromIndexedDb({
+        tabId,
+        persistence: indexedDbPersistence
+      });
+    } catch (error) {
+      recoveryError = error;
+    }
+
+    const indexedDbSession = recovery?.status === 'recovered'
+      ? recovery.session
+      : null;
+
+    const legacySession = indexedDbSession
+      ? null
+      : await sessionPersistence.load(tabId);
+
+    const session = indexedDbSession || legacySession || freshSession(tabId);
     session.schemaVersion = Math.max(Number(session.schemaVersion) || 2, 4);
     session.sessionId = session.sessionId || `session_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     session.preserveSession = session.preserveSession !== false;
@@ -177,6 +210,27 @@ async function loadSession(tabId) {
     session.retention = session.retention || { timelineSeen: 0, timelineEvicted: 0, timelineDropped: 0, networkSeen: 0, networkEvicted: 0, analyticsBodiesSuppressed: 0 };
     session.suppressed = session.suppressed || { analyticsBodies: 0 };
     session.tasks = Array.isArray(session.tasks) ? session.tasks.slice(-100) : [];
+
+    if (indexedDbSession) {
+      markIndexedDbBootstrapped(session);
+      diagnostic(session, 'indexeddb-session-recovered', {
+        sessionId: session.sessionId,
+        recordCount: Array.isArray(recovery?.records) ? recovery.records.length : 0,
+        entityCount: Array.isArray(recovery?.entities) ? recovery.entities.length : 0
+      });
+    } else if (recoveryError || (recovery && recovery.status !== 'missing')) {
+      const detail = {
+        status: recovery?.status || 'read-error',
+        issues: Array.isArray(recovery?.issues) ? recovery.issues : []
+      };
+
+      if (recoveryError) {
+        detail.message = String(recoveryError?.message || recoveryError);
+      }
+
+      diagnostic(session, 'indexeddb-recovery-fallback', detail);
+    }
+
     // Never trust persisted incremental counters blindly. Rebuild once from the
     // actual retained collections so stale accounting cannot trigger trim loops.
     rebuildStorageStats(session);
@@ -188,15 +242,184 @@ async function loadSession(tabId) {
   return pending;
 }
 
+function getSessionRecordDelta(session) {
+  const tabId = Number(session?.tabId);
+
+  if (!Number.isInteger(tabId)) {
+    throw new TypeError('session.tabId is required for record persistence.');
+  }
+
+  if (!session?.sessionId) {
+    throw new TypeError('session.sessionId is required for record persistence.');
+  }
+
+  let state = recordDeltas.get(tabId);
+
+  if (!state || state.sessionId !== session.sessionId) {
+    state = {
+      sessionId: session.sessionId,
+      delta: createRecordDeltaQueue()
+    };
+    recordDeltas.set(tabId, state);
+  }
+
+  return state.delta;
+}
+
+function queueRecordPut(session, bucket, value) {
+  const record = createPersistedRecord(session.sessionId, bucket, value);
+  getSessionRecordDelta(session).put(record);
+  return record;
+}
+
+function queueRecordDelete(session, bucket, value) {
+  if (!value) return;
+  const record = createPersistedRecord(session.sessionId, bucket, value);
+  getSessionRecordDelta(session).remove(record.recordKey);
+}
+
+function resetRecordDelta(tabId) {
+  recordDeltas.delete(tabId);
+}
+
+function getSessionEntityDelta(session) {
+  const tabId = Number(session?.tabId);
+
+  if (!Number.isInteger(tabId)) {
+    throw new TypeError('session.tabId is required for entity persistence.');
+  }
+
+  if (!session?.sessionId) {
+    throw new TypeError('session.sessionId is required for entity persistence.');
+  }
+
+  let state = entityDeltas.get(tabId);
+
+  if (!state || state.sessionId !== session.sessionId) {
+    state = {
+      sessionId: session.sessionId,
+      delta: createEntityDeltaQueue()
+    };
+    entityDeltas.set(tabId, state);
+  }
+
+  return state.delta;
+}
+
+function queueEntityPut(session, bucket, value) {
+  const entity = createPersistedEntity(session.sessionId, bucket, value);
+  getSessionEntityDelta(session).put(entity);
+  return entity;
+}
+
+function queueSourceEntityPut(session, source) {
+  if (!source?.id) return null;
+  return queueEntityPut(session, 'source', source);
+}
+
+function queueSourceEntityDelete(session, source) {
+  if (!source?.id) return;
+  getSessionEntityDelta(session).remove(sourceEntityKey(session.sessionId, source.id));
+}
+
+function pushSourceTracked(session, source) {
+  const removed = trackedPush(session, 'sources', source, LIMITS.maxSources, 'source');
+  queueSourceEntityPut(session, source);
+  for (const evicted of removed) queueSourceEntityDelete(session, evicted);
+  return removed;
+}
+
+function removeSourceTrackedAt(session, index) {
+  const removed = removeTrackedAt(session, 'sources', index, 'source');
+  queueSourceEntityDelete(session, removed);
+  return removed;
+}
+
+function resetEntityDelta(tabId) {
+  entityDeltas.delete(tabId);
+}
+
+function isIndexedDbBootstrapped(session) {
+  return indexedDbBootstraps.get(session.tabId) === session.sessionId;
+}
+
+function markIndexedDbBootstrapped(session) {
+  indexedDbBootstraps.set(session.tabId, session.sessionId);
+}
+
+function resetIndexedDbBootstrap(tabId) {
+  indexedDbBootstraps.delete(tabId);
+}
 function getFlushState(tabId) {
   let state = flushStates.get(tabId);
   if (!state) {
-    state = { timer: null, inFlight: false, dirty: false };
+    state = {
+      timer: null,
+      retryTimer: null,
+      retryAttempts: 0,
+      retrySessionId: null,
+      retryExhaustedNotified: false,
+      inFlight: false,
+      dirty: false,
+      promise: null,
+      suspended: false
+    };
     flushStates.set(tabId, state);
   }
   return state;
 }
 
+const INDEXEDDB_RETRY_DELAYS_MS = Object.freeze([250, 1000, 4000]);
+
+function cancelIndexedDbRetry(state) {
+  if (state?.retryTimer == null) return;
+  clearTimeout(state.retryTimer);
+  state.retryTimer = null;
+}
+
+function resetIndexedDbRetry(state) {
+  cancelIndexedDbRetry(state);
+  state.retryAttempts = 0;
+  state.retryExhaustedNotified = false;
+}
+
+function bindIndexedDbRetrySession(state, sessionId) {
+  if (state.retrySessionId === sessionId) return;
+
+  resetIndexedDbRetry(state);
+  state.retrySessionId = sessionId;
+}
+
+function scheduleIndexedDbRetry(tabId, session) {
+  const state = getFlushState(tabId);
+
+  bindIndexedDbRetrySession(state, session.sessionId);
+
+  if (state.suspended || state.retryTimer != null || state.dirty) return;
+
+  const attempt = state.retryAttempts;
+  const delay = INDEXEDDB_RETRY_DELAYS_MS[attempt];
+
+  if (!Number.isFinite(delay)) {
+    if (!state.retryExhaustedNotified) {
+      state.retryExhaustedNotified = true;
+      diagnostic(session, 'indexeddb-retry-exhausted', {
+        sessionId: session.sessionId,
+        attempts: state.retryAttempts
+      });
+    }
+    return;
+  }
+
+  state.retryAttempts += 1;
+  state.retryTimer = setTimeout(() => {
+    state.retryTimer = null;
+
+    if (state.suspended || !sessions.has(tabId)) return;
+
+    void flushSession(tabId);
+  }, delay);
+}
 function applyBackpressure(session) {
   const stats = ensureStorageStats(session);
   if (stats.approxBytes <= LIMITS.maxPersistedBytes) return;
@@ -211,23 +434,26 @@ function applyBackpressure(session) {
   while (stats.approxBytes > target && session.timeline.length) {
     const index = session.timeline.findIndex(item => /performance|mutation|worker-awareness|storage-snapshot|timer-/.test(item.kind || ''));
     if (index < 0) break;
-    removeTrackedAt(session, 'timeline', index, 'timeline');
+    const evicted = removeTrackedAt(session, 'timeline', index, 'timeline');
+    queueRecordDelete(session, 'timeline', evicted);
     removedTimeline += 1;
   }
 
   while (stats.approxBytes > target && session.network.length > 100) {
-    removeTrackedAt(session, 'network', 0, 'network');
+    const evicted = removeTrackedAt(session, 'network', 0, 'network');
+    queueRecordDelete(session, 'network', evicted);
     removedNetwork += 1;
     session.retention.networkEvicted = (session.retention.networkEvicted || 0) + 1;
   }
 
   while (stats.approxBytes > target && session.sources.length > 20) {
-    removeTrackedAt(session, 'sources', 0, 'source');
+    removeSourceTrackedAt(session, 0);
     removedSources += 1;
   }
 
   if (stats.approxBytes > target && session.html) {
     trackedReplace(session, 'html', trimText(session.html, Math.max(50_000, Math.floor(LIMITS.maxHtmlChars * 0.25))), 'html');
+    queueEntityPut(session, 'html', session.html);
   }
 
   diagnostic(session, 'backpressure-trim', {
@@ -242,29 +468,194 @@ function applyBackpressure(session) {
 
 async function flushSession(tabId) {
   const state = getFlushState(tabId);
+
+  if (state.suspended) return;
+
   if (state.inFlight) {
     state.dirty = true;
-    return;
+    return state.promise;
   }
+
   const session = sessions.get(tabId);
   if (!session) return;
 
+  bindIndexedDbRetrySession(state, session.sessionId);
+
   state.inFlight = true;
   state.dirty = false;
+
+  const pending = (async () => {
+    let indexedDbOk = true;
+
+    try {
+      applyBackpressure(session);
+
+      const deltaQueue = getSessionRecordDelta(session);
+      const entityDeltaQueue = getSessionEntityDelta(session);
+      const bootstrap = !isIndexedDbBootstrapped(session);
+
+      if (sessions.get(tabId)?.sessionId !== session.sessionId) {
+        return {
+          sessionId: session.sessionId,
+          indexedDbOk: false,
+          stale: true
+        };
+      }
+
+      try {
+        await flushSessionToIndexedDb({
+          session,
+          deltaQueue,
+          entityDeltaQueue,
+          persistence: indexedDbPersistence,
+          bootstrap
+        });
+
+        resetIndexedDbRetry(state);
+
+        if (bootstrap && sessions.get(tabId)?.sessionId === session.sessionId) markIndexedDbBootstrapped(session);
+      } catch (error) {
+        indexedDbOk = false;
+
+        const message = String(error?.message || error);
+
+        diagnostic(session, 'indexeddb-write-failed', { message });
+
+        /*
+         * Incremental continuity is no longer trustworthy after a failed
+         * durable write. Discard accumulated mutation deltas and force
+         * the next write to bootstrap from the current bounded RAM truth.
+         */
+        resetRecordDelta(tabId);
+        resetEntityDelta(tabId);
+        resetIndexedDbBootstrap(tabId);
+
+        diagnostic(session, 'indexeddb-rebase-required', {
+          message,
+          sessionId: session.sessionId
+        });
+
+        scheduleIndexedDbRetry(tabId, session);
+      }
+
+      return {
+        sessionId: session.sessionId,
+        indexedDbOk,
+        stale: false
+      };
+    } finally {
+      state.inFlight = false;
+      if (state.dirty && sessions.has(tabId)) scheduleFlush(tabId, 50);
+    }
+  })();
+
+  state.promise = pending;
+
   try {
-    applyBackpressure(session);
-    const key = `brt_session_${tabId}`;
-    await chrome.storage.local.set({ [key]: session });
-  } catch (error) {
-    diagnostic(session, 'storage-write-failed', { message: String(error?.message || error) });
+    return await pending;
   } finally {
-    state.inFlight = false;
-    if (state.dirty && sessions.has(tabId)) scheduleFlush(tabId, 50);
+    if (state.promise === pending) {
+      state.promise = null;
+    }
   }
+}
+
+async function settleFlushBeforeLifecycle(tabId, { flushDirty = false } = {}) {
+  const state = getFlushState(tabId);
+
+  const cancelTimer = () => {
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+  };
+
+  cancelTimer();
+  cancelIndexedDbRetry(state);
+
+  const pending = state.promise;
+  if (pending) {
+    await pending;
+  }
+
+  // The completed flush may have scheduled a dirty tail or retry.
+  cancelTimer();
+  cancelIndexedDbRetry(state);
+
+  while (flushDirty && state.dirty && sessions.has(tabId)) {
+    state.dirty = false;
+    await flushSession(tabId);
+    cancelTimer();
+    cancelIndexedDbRetry(state);
+  }
+
+  state.dirty = false;
+}
+
+async function flushSessionNow(tabId) {
+  const state = getFlushState(tabId);
+
+  if (state.suspended) return;
+
+  cancelIndexedDbRetry(state);
+
+  let result = null;
+
+  while (true) {
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+
+    if (state.inFlight) {
+      state.dirty = true;
+      result = await state.promise;
+    } else {
+      result = await flushSession(tabId);
+    }
+
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+
+    if (!state.dirty) {
+      return result;
+    }
+  }
+}
+
+function suspendSessionFlush(tabId) {
+  const state = getFlushState(tabId);
+
+  if (state.inFlight) {
+    throw new Error('Cannot suspend session flush while persistence is in flight.');
+  }
+
+  if (state.timer) {
+    clearTimeout(state.timer);
+    state.timer = null;
+  }
+
+  cancelIndexedDbRetry(state);
+  state.dirty = false;
+  state.suspended = true;
+}
+
+function resumeSessionFlush(tabId) {
+  const state = getFlushState(tabId);
+  state.suspended = false;
+}
+
+async function settleAndSuspendSessionFlush(tabId) {
+  await settleFlushBeforeLifecycle(tabId, { flushDirty: false });
+  suspendSessionFlush(tabId);
 }
 
 function scheduleFlush(tabId, delay = 350) {
   const state = getFlushState(tabId);
+  if (state.suspended) return;
+  cancelIndexedDbRetry(state);
   state.dirty = true;
   if (state.timer) clearTimeout(state.timer);
   state.timer = setTimeout(() => {
@@ -391,7 +782,17 @@ function pushCapped(arr, item, max) {
 }
 
 function pushTimeline(session, item) {
-  return pushTimelineTracked(session, item, LIMITS.maxTimelineEvents);
+  const result = pushTimelineTracked(session, item, LIMITS.maxTimelineEvents);
+
+  if (result.kept) {
+    queueRecordPut(session, 'timeline', item);
+  }
+
+  if (result.evicted) {
+    queueRecordDelete(session, 'timeline', result.evicted);
+  }
+
+  return result;
 }
 
 function sanitizeCdpEvent(method, params = {}) {
@@ -538,6 +939,7 @@ function indexExternalSource(tabId, payload) {
       sourceFrame,
       observedAt
     );
+    queueSourceEntityPut(session, existingSource);
 
     /*
      * recordSourceObservation mutates a retained source in place,
@@ -663,6 +1065,7 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
 
   if (existingSource) {
     attachPendingSourceObservations(existingSource);
+    queueSourceEntityPut(session, existingSource);
     rebuildStorageStats(session);
     session.updatedAt = Date.now();
     scheduleFlush(tabId);
@@ -714,13 +1117,7 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
         staticFindings: [],
         fetchPolicy: { decision: 'blocked', reason: sourcePolicy.reason }
       });
-      const removed = trackedPush(
-        session,
-        'sources',
-        sourceRecord,
-        LIMITS.maxSources,
-        'source'
-      );
+      const removed = pushSourceTracked(session, sourceRecord);
       session.counters.sources = session.sources.length;
       if (removed.length) diagnostic(session, 'source-retention-evicted', { count: removed.length });
       diagnostic(session, 'source-fetch-policy-blocked', { url: shownUrl, reason: sourcePolicy.reason, classification });
@@ -773,13 +1170,7 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
             }
           });
 
-        const removed = trackedPush(
-          session,
-          'sources',
-          sourceRecord,
-          LIMITS.maxSources,
-          'source'
-        );
+        const removed = pushSourceTracked(session, sourceRecord);
 
         session.counters.sources =
           session.sources.length;
@@ -856,13 +1247,7 @@ async function collectExternalSource(tabId, payload, taskSignal = null) {
       bytesRead: bounded.bytesRead,
       staticFindings: includeBody ? staticFindings(rawText, shownUrl) : []
     });
-    const removed = trackedPush(
-      session,
-      'sources',
-      sourceRecord,
-      LIMITS.maxSources,
-      'source'
-    );
+    const removed = pushSourceTracked(session, sourceRecord);
     session.counters.sources = session.sources.length;
     if (removed.length) diagnostic(session, 'source-retention-evicted', { count: removed.length });
     diagnostic(session, bounded.truncated ? 'source-fetch-truncated' : 'source-fetch-success', { url: shownUrl, status: res.status, bytesRead: bounded.bytesRead });
@@ -897,10 +1282,43 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
   session.updatedAt = Date.now();
   const canonicalSequence = ++session.sequence;
   antiBotAnalysisCache.delete(tabId);
+
   const canonicalDocumentId = resolveCanonicalDocumentId(payload, senderContext.documentId);
+  const canonicalFrameId = senderContext.frameId ?? payload.frameId ?? 0;
+  const producerSequence = pageObservable
+    && Number.isInteger(payload.sequence)
+    && payload.sequence > 0
+    ? payload.sequence
+    : null;
+
+  if (producerSequence != null) {
+    const continuity = observePageProducerSequence({
+      continuity: session.continuity,
+      generation: payload.generation,
+      runId: payload.runId,
+      documentId: canonicalDocumentId,
+      frameId: canonicalFrameId,
+      producerSequence,
+      observedAt: session.updatedAt
+    });
+
+    session.continuity = continuity.state;
+
+    if (continuity.gap) {
+      diagnostic(session, 'page-producer-sequence-gap', continuity.gap);
+    }
+
+    if (continuity.evicted?.length) {
+      diagnostic(session, 'page-continuity-cursor-evicted', {
+        count: continuity.evicted.length
+      });
+    }
+  }
+
   const canonical = {
     ...payload,
     eventId: payload.eventId || `evt_${Date.now().toString(36)}_${canonicalSequence}`,
+    producerSequence,
     sequence: canonicalSequence,
     sessionId: session.sessionId,
     source: payload.source || 'page-agent',
@@ -910,7 +1328,7 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
       integrity: 'unknown'
     },
     documentId: canonicalDocumentId,
-    frameId: senderContext.frameId ?? payload.frameId ?? 0
+    frameId: canonicalFrameId
   };
 
   const senderObservedUrl = sanitizeUrl(senderContext.url || '');
@@ -1009,8 +1427,10 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
 
   if (canonical.kind === 'html-snapshot' && canonical.frameId === 0) {
     trackedReplace(session, 'html', trimText(canonical.data?.text || '', LIMITS.maxHtmlChars), 'html');
+    queueEntityPut(session, 'html', session.html);
   } else if (canonical.kind === 'runtime-snapshot' && canonical.frameId === 0) {
     trackedReplace(session, 'runtime', (canonical.data?.entries || []).slice(0, LIMITS.maxRuntimeEntries), 'runtime');
+    queueEntityPut(session, 'runtime', session.runtime);
   } else if (canonical.kind === 'runtime-watch' && canonical.frameId === 0) {
     const path = canonical.data?.path;
     if (path) {
@@ -1031,7 +1451,7 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
       LIMITS.maxSourceChars
     );
     const contentHash = await sha256Text(text);
-    trackedPush(session, 'sources', {
+    const sourceRecord = {
       id: `src_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
       type: 'inline-script',
       url: sourceFrame.documentUrl || session.pageUrl,
@@ -1045,7 +1465,9 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
         text,
         sourceFrame.documentUrl || session.pageUrl
       )
-    }, LIMITS.maxSources, 'source');
+    };
+
+    pushSourceTracked(session, sourceRecord);
     session.counters.sources = session.sources.length;
   } else if (canonical.kind === 'source-url') {
     void indexExternalSource(tabId, canonical);
@@ -1063,6 +1485,8 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
     if (!suppressBody) {
       session.retention.networkSeen = (session.retention.networkSeen || 0) + 1;
       const removed = trackedPush(session, 'network', canonical, LIMITS.maxNetworkRecords, 'network');
+      queueRecordPut(session, 'network', canonical);
+      for (const evicted of removed) queueRecordDelete(session, 'network', evicted);
       if (removed.length) session.retention.networkEvicted = (session.retention.networkEvicted || 0) + removed.length;
     }
   }
@@ -1521,7 +1945,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true, tabId: tab.id, sessionId: existing.sessionId, duplicate: true });
         return;
       }
+
+      await settleFlushBeforeLifecycle(tab.id, { flushDirty: true });
+
       const session = freshSession(tab.id);
+      resetRecordDelta(tab.id);
+      resetEntityDelta(tab.id);
+      resetIndexedDbBootstrap(tab.id);
       taskAccounting.delete(tab.id);
       antiBotAnalysisCache.delete(tab.id);
       session.running = true;
@@ -1542,10 +1972,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       session.antiBot = createAntiBotState(antiBotEnabled);
       session.preserveSession = message.preserveSession !== false;
       sessions.set(tab.id, session);
+
+      // Flush the new lifecycle identity before page capture can begin.
+      await flushSessionNow(tab.id);
+
       await injectBridge(tab.id);
       if (session.requestedMode === 'deep') await attachDeepMode(tab.id, session);
       await sendCommand(tab.id, 'START', session.generation, { mode: session.effectiveMode, settings: session.captureSettings });
-      scheduleFlush(tab.id);
+
+      // Flush state/events produced while activating the new run.
+      await flushSessionNow(tab.id);
       sendResponse({ ok: true, tabId: tab.id });
       return;
     }
@@ -1579,7 +2015,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         session.agentStatusAt = Date.now();
         session.runState = 'stopped';
         await detachDeepMode(tab.id, session);
-        scheduleFlush(tab.id);
+
+        const flushResult = await flushSessionNow(tab.id);
+
+        if (!flushResult?.indexedDbOk || flushResult.stale) {
+          throw new Error('STOP state was not durably persisted to IndexedDB.');
+        }
       }
       sendResponse({ ok: true });
       return;
@@ -1588,12 +2029,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'BRT_CLEAR') {
       const tab = await activeTab();
       if (tab?.id) {
+        const session = await loadSession(tab.id);
+        const sessionId = session.sessionId;
+
+        await settleAndSuspendSessionFlush(tab.id);
+
         for (const task of taskRunner.list({ tabId: tab.id })) taskRunner.cancel(task.taskId, 'Session cleared.');
         taskAccounting.delete(tab.id);
         antiBotAnalysisCache.delete(tab.id);
         for (const key of pendingSourceTasks.keys()) if (key.startsWith(`${tab.id}:`)) pendingSourceTasks.delete(key);
+
+        await indexedDbPersistence.deleteSessionData({
+          tabId: tab.id,
+          sessionId
+        });
+
+        await sessionPersistence.remove(tab.id);
+
+        resetRecordDelta(tab.id);
+        resetEntityDelta(tab.id);
+        resetIndexedDbBootstrap(tab.id);
         sessions.set(tab.id, freshSession(tab.id));
-        await chrome.storage.local.remove(`brt_session_${tab.id}`);
+        resumeSessionFlush(tab.id);
       }
       sendResponse({ ok: true });
       return;
@@ -1733,12 +2190,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             normalizedPattern
         ) continue;
 
-        removeTrackedAt(
-          session,
-          'sources',
-          i,
-          'source'
-        );
+        removeSourceTrackedAt(session, i);
       }
 
       session.counters.sources =
@@ -1798,6 +2250,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tab = await activeTab();
       if (!tab?.id) return sendResponse({ session: null });
       sendResponse({ session: await loadSession(tab.id) });
+      return;
+    }
+
+    if (message?.type === 'BRT_EXPORT_SESSION') {
+      const tab = await activeTab();
+
+      if (!tab?.id) {
+        sendResponse({ ok: true, session: null });
+        return;
+      }
+
+      const session = await loadSession(tab.id);
+      const expectedSessionId = session.sessionId;
+      const flushResult = await flushSessionNow(tab.id);
+
+      if (!flushResult?.indexedDbOk || flushResult.stale || flushResult.sessionId !== expectedSessionId) {
+        throw new Error('Session export could not establish a durable IndexedDB snapshot.');
+      }
+
+      const recovery = await recoverSessionFromIndexedDb({
+        tabId: tab.id,
+        persistence: indexedDbPersistence
+      });
+
+      if (recovery.status !== 'recovered' || recovery.session?.sessionId !== expectedSessionId) {
+        throw new Error('Session export could not recover the durable IndexedDB snapshot.');
+      }
+
+      sendResponse({ ok: true, session: recovery.session });
       return;
     }
 
@@ -1870,7 +2351,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tab = await activeTab();
       if (!tab?.id || !message.session || typeof message.session !== 'object') throw new Error('Invalid session import.');
       const imported = message.session;
+
+      await settleFlushBeforeLifecycle(tab.id, { flushDirty: true });
+
       const session = { ...freshSession(tab.id), ...imported, tabId: tab.id, sessionId: `import_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, running: false, importedReadOnly: true, importedAt: Date.now() };
+      resetRecordDelta(tab.id);
+      resetEntityDelta(tab.id);
+      resetIndexedDbBootstrap(tab.id);
       taskAccounting.delete(tab.id);
       antiBotAnalysisCache.delete(tab.id);
       ensureSessionCounters(session);
@@ -1881,7 +2368,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       rebuildStorageStats(session);
       pushTimeline(session, { kind: 'session-import', eventId: `evt_${Date.now().toString(36)}_${++session.sequence}`, sessionId: session.sessionId, sequence: session.sequence, wallTime: Date.now(), monotonicTime: null, label: 'Imported session', data: { originalSessionId: imported.sessionId || null } });
       sessions.set(tab.id, session);
-      scheduleFlush(tab.id);
+      await flushSessionNow(tab.id);
       sendResponse({ ok: true, sessionId: session.sessionId });
       return;
     }
@@ -2029,18 +2516,42 @@ function sanitizeNavigationUrl(url) {
   return sanitizeUrl(url);
 }
 
+function cleanupRemovedTabState(tabId) {
+  const flushState = flushStates.get(tabId);
+  if (flushState?.timer) clearTimeout(flushState.timer);
+  cancelIndexedDbRetry(flushState);
+
+  flushStates.delete(tabId);
+  sessionLoads.delete(tabId);
+  cdpTabs.delete(tabId);
+  generationCounters.delete(tabId);
+  resetRecordDelta(tabId);
+  resetEntityDelta(tabId);
+  resetIndexedDbBootstrap(tabId);
+  sessions.delete(tabId);
+}
+
+async function finalizeRemovedTab(tabId) {
+  const session = sessions.get(tabId);
+
+  try {
+    if (!session) return;
+
+    diagnostic(session, 'tab-close-finalization', {
+      sessionId: session.sessionId
+    });
+
+    await flushSessionNow(tabId);
+  } finally {
+    cleanupRemovedTabState(tabId);
+  }
+}
+
 chrome.tabs?.onRemoved?.addListener((tabId) => {
   for (const task of taskRunner.list({ tabId })) taskRunner.cancel(task.taskId, 'Tab closed.');
   taskAccounting.delete(tabId);
   antiBotAnalysisCache.delete(tabId);
   for (const key of pendingSourceTasks.keys()) if (key.startsWith(`${tabId}:`)) pendingSourceTasks.delete(key);
-  const flushState = flushStates.get(tabId);
-  if (flushState?.timer) clearTimeout(flushState.timer);
-  flushStates.delete(tabId);
-  sessionLoads.delete(tabId);
-  cdpTabs.delete(tabId);
-  generationCounters.delete(tabId);
-  sessions.delete(tabId);
-  // Persistent session data is intentionally retained in chrome.storage.local.
-  // Closing a tab must free RAM without silently destroying the research log.
+
+  void finalizeRemovedTab(tabId);
 });

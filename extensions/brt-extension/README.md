@@ -203,8 +203,10 @@ Important limitations remain:
 - Response bodies can contain data whose sensitivity cannot be inferred from field names.
 - Exported sessions should still be reviewed before sharing publicly.
 
-No remote telemetry or BRT-operated backend is used by this extension. Session data is stored locally through extension
-storage and exported only on user action.
+No remote telemetry or BRT-operated backend is used by this extension. Session data is persisted locally in IndexedDB, using
+separate session headers, append-oriented timeline/network records, mutable source/HTML/runtime entities, and an active-session
+pointer. Raw session export is user-triggered and reconstructs the exported session from durable persisted state after pending
+writes are drained. `chrome.storage.local` is retained only for legacy-session fallback/migration compatibility.
 
 ## Permissions
 
