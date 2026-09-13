@@ -817,6 +817,8 @@ function gapSortKey(gap) {
   return text(gap?.id);
 }
 
+const MAX_RENDERED_GAPS = 10;
+
 function renderGaps(gaps) {
   const rows = sortedCopy(
     gaps,
@@ -836,7 +838,16 @@ function renderGaps(gaps) {
     return lines;
   }
 
-  for (const gap of rows) {
+  lines.push(
+    '- Total gaps: ' +
+      String(rows.length),
+    ''
+  );
+
+  const visible =
+    rows.slice(0, MAX_RENDERED_GAPS);
+
+  for (const gap of visible) {
     lines.push(
       '- ' +
         code(
@@ -852,6 +863,105 @@ function renderGaps(gaps) {
             'No reason provided.'
           )
         )
+    );
+
+    if (
+      gap?.kind ===
+      'page-producer-sequence-gap'
+    ) {
+      const missingFrom =
+        number(
+          gap.missingProducerSequenceFrom
+        );
+
+      const missingTo =
+        number(
+          gap.missingProducerSequenceTo
+        );
+
+      const missingRange =
+        missingFrom != null &&
+        missingTo != null
+          ? String(missingFrom) +
+            '..' +
+            String(missingTo)
+          : 'unknown';
+
+      lines.push(
+        '  - Kind: ' +
+          code(
+            text(
+              gap.kind,
+              'unknown'
+            )
+          ),
+        '  - Document: ' +
+          code(
+            text(
+              gap.documentId,
+              'unknown'
+            )
+          ),
+        '  - Frame: ' +
+          String(
+            Number.isInteger(gap.frameId)
+              ? gap.frameId
+              : 'unknown'
+          ),
+        '  - Missing producer sequence: ' +
+          code(missingRange),
+        '  - Missing count: ' +
+          String(
+            number(gap.missingCount) ??
+            'unknown'
+          ),
+        '  - Expected producer sequence: ' +
+          String(
+            number(
+              gap.expectedProducerSequence
+            ) ?? 'unknown'
+          ),
+        '  - Received producer sequence: ' +
+          String(
+            number(
+              gap.receivedProducerSequence
+            ) ?? 'unknown'
+          ),
+        '  - At: ' +
+          String(
+            number(gap.at) ?? 'unknown'
+          ),
+        '  - Generation: ' +
+          String(
+            number(gap.generation) ??
+            'unknown'
+          ),
+        '  - Run: ' +
+          code(
+            text(
+              gap.runId,
+              'unknown'
+            )
+          ),
+        '  - Provenance: ' +
+          code(
+            text(
+              gap.provenance,
+              'unknown'
+            )
+          )
+      );
+    }
+  }
+
+  if (rows.length > visible.length) {
+    lines.push(
+      '',
+      '_Showing first ' +
+        String(visible.length) +
+        ' of ' +
+        String(rows.length) +
+        ' gaps._'
     );
   }
 

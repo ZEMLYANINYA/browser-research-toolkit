@@ -1,4 +1,5 @@
 import { classifyAntiBotRecord } from './antibot.js';
+import { isAnalyticsNetworkRecord } from './network-analysis.js';
 
 function safeString(value) {
   return typeof value === 'string' ? value : '';
@@ -549,11 +550,25 @@ function buildWorkflow(session) {
   const relevant = [
     ...timeline,
     ...network
-  ].filter(item =>
-    item?.kind === 'form-submit' ||
-    item?.kind === 'network-request' ||
-    item?.kind === 'hard-navigation'
-  );
+  ].filter(item => {
+    const workflowKind =
+      item?.kind === 'form-submit' ||
+      item?.kind === 'network-request' ||
+      item?.kind === 'hard-navigation';
+
+    if (!workflowKind) {
+      return false;
+    }
+
+    if (
+      item?.kind === 'network-request' &&
+      isAnalyticsNetworkRecord(item?.data)
+    ) {
+      return false;
+    }
+
+    return true;
+  });
 
   const deduped = new Map();
 
@@ -1149,7 +1164,7 @@ function buildForms(session) {
   };
 }
 
-function buildBlueprintGaps(forms) {
+function buildBlueprintGaps(session, forms) {
   const gaps = [];
 
   if (forms.observations.length > 0) {
@@ -1157,6 +1172,67 @@ function buildBlueprintGaps(forms) {
       id: 'form-value-equality',
       reason:
         'Raw form field values are intentionally not retained; only value presence can be compared.'
+    });
+  }
+
+  const diagnostics =
+    Array.isArray(session?.diagnostics)
+      ? session.diagnostics
+      : [];
+
+  let producerGapIndex = 0;
+
+  for (const diagnostic of diagnostics) {
+    if (
+      diagnostic?.kind !==
+      'page-producer-sequence-gap'
+    ) {
+      continue;
+    }
+
+    producerGapIndex += 1;
+
+    const expected =
+      safeNumber(
+        diagnostic.expectedProducerSequence
+      );
+
+    const received =
+      safeNumber(
+        diagnostic.receivedProducerSequence
+      );
+
+    gaps.push({
+      id:
+        'page-producer-sequence-gap-' +
+        producerGapIndex,
+      kind: 'page-producer-sequence-gap',
+      at: safeNumber(diagnostic.at),
+      documentId:
+        safeString(diagnostic.documentId) || null,
+      frameId:
+        Number.isInteger(diagnostic.frameId)
+          ? diagnostic.frameId
+          : null,
+      expectedProducerSequence: expected,
+      receivedProducerSequence: received,
+      missingProducerSequenceFrom: expected,
+      missingProducerSequenceTo:
+        expected != null &&
+        received != null &&
+        received > expected
+          ? received - 1
+          : null,
+      missingCount:
+        safeNumber(diagnostic.missingCount),
+      generation:
+        safeNumber(diagnostic.generation),
+      runId:
+        safeString(diagnostic.runId) || null,
+      provenance:
+        safeString(diagnostic.provenance) || null,
+      reason:
+        'Page producer sequence gap recorded; captured evidence is incomplete for this producer range.'
     });
   }
 
@@ -1200,10 +1276,41 @@ function signalEvidenceRef(signal, reason) {
 }
 
 function buildSignals(session) {
+  const timeline =
+    Array.isArray(session?.timeline)
+      ? session.timeline
+      : [];
+
   const network =
     Array.isArray(session?.network)
       ? session.network
       : [];
+
+  const signalNetwork = [...network];
+
+  const retainedRequestKeys =
+    new Set(
+      network
+        .filter(item =>
+          item?.kind === 'network-request'
+        )
+        .map(workflowEventKey)
+    );
+
+  for (const item of timeline) {
+    if (item?.kind !== 'network-request') {
+      continue;
+    }
+
+    const key = workflowEventKey(item);
+
+    if (retainedRequestKeys.has(key)) {
+      continue;
+    }
+
+    retainedRequestKeys.add(key);
+    signalNetwork.push(item);
+  }
 
   const retained =
     Array.isArray(session?.antiBot?.signals)
@@ -1286,7 +1393,7 @@ function buildSignals(session) {
 
   const unknown = [];
 
-  for (const item of network) {
+  for (const item of signalNetwork) {
     const data =
       item?.data && typeof item.data === 'object'
         ? item.data
@@ -1300,12 +1407,15 @@ function buildSignals(session) {
     } catch {}
 
     const telemetry =
-      data.classification === 'analytics' ||
+      item?.kind === 'network-request' &&
       (
-        Array.isArray(
-          classification?.telemetryMatches
-        ) &&
-        classification.telemetryMatches.length > 0
+        isAnalyticsNetworkRecord(data) ||
+        (
+          Array.isArray(
+            classification?.telemetryMatches
+          ) &&
+          classification.telemetryMatches.length > 0
+        )
       );
 
     if (telemetry) {
@@ -1930,7 +2040,10 @@ export function generateParserBlueprint(session = {}) {
     buildForms(safeSession);
 
   const gaps =
-    buildBlueprintGaps(forms);
+    buildBlueprintGaps(
+      safeSession,
+      forms
+    );
 
   const transport =
     inferTransport(safeSession);

@@ -1,10 +1,62 @@
 import { classifyAntiBotRecord } from './antibot.js';
 
+const ANALYTICS_URL_TOKEN =
+  /(?:^|[./_-])(?:analytics|telemetry|collect|pixel|beacon|gtag|webvisor|pagead\d*|doubleclick|rmkt|ccm|tracking)(?:[./_?=&-]|$)/i;
+
+function isGoogleHostname(hostname) {
+  return /(^|\.)google\.(?:com|[a-z]{2,3})(?:\.[a-z]{2})?$/i
+    .test(String(hostname || ''));
+}
+
+export function isAnalyticsNetworkRecord(data = {}) {
+  const url = String(data?.url || '');
+
+  if (ANALYTICS_URL_TOKEN.test(url)) {
+    return true;
+  }
+
+  let parsed = null;
+
+  try {
+    parsed = new URL(url);
+  } catch {}
+
+  const pathname =
+    String(parsed?.pathname || '').toLowerCase();
+
+  if (
+    pathname.endsWith('/log204') ||
+    pathname.endsWith('/gen_204')
+  ) {
+    return true;
+  }
+
+  if (pathname === '/log') {
+    const transport =
+      String(data?.transport || '').toLowerCase();
+
+    if (
+      isGoogleHostname(parsed?.hostname) ||
+      transport === 'beacon'
+    ) {
+      return true;
+    }
+
+    if (
+      Number(data?.status) === 204 &&
+      (data?.body == null || data.body === '')
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function classifyNetwork(data, pageUrl = '') {
   const url = String(data?.url || '');
-  const lower = url.toLowerCase();
   const antiBot = classifyAntiBotRecord({ kind: 'network-request', data }).isAntiBotSignal;
-  const analytics = /analytics|telemetry|collect|pixel|beacon|gtag|webvisor|pagead|doubleclick|rmkt|ccm|\/wa\/|\/tracking\//.test(lower);
+  const analytics = isAnalyticsNetworkRecord(data);
   const bodyText = typeof data?.body === 'string' ? data.body : '';
   const graphql = /graphql/i.test(url) || /operationName|query\s*[:=]/i.test(bodyText);
   return {
