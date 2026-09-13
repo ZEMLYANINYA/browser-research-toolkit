@@ -23,6 +23,7 @@
 - Tab removal performs best-effort persistence finalization before dropping in-memory session state.
 - Producer-continuity cursor eviction is bounded and surfaced through diagnostics rather than being silent.
 - Service-worker recovery records an explicit recovery diagnostic and preserves observable producer-gap evidence through durable export.
+- Corrected CDP WebSocket handling to match real Chromium `Network.webSocket*` event casing and `params.response` frame metadata.
 
 ### Tests
 
@@ -31,6 +32,9 @@
 - Added a service-worker recovery fixture covering START -> events -> lifecycle break -> recovery -> producer gap -> STOP -> EXPORT.
 - Added producer-continuity tests for independent streams, gaps, duplicate/out-of-order events, bounded history, and cursor eviction.
 - Added behavioral coverage for extracted capture routing, network-analysis helpers, CDP event sanitization, timeline-label formatting, bounded session search, read/query control handlers, mutating control handlers, and explicit task-cancellation routing.
+- Added real-Chromium smoke coverage for capture lifecycle, frame/document provenance, DOM-to-network correlation, optional host permissions, MV3 IndexedDB recovery, and Deep-mode CDP/WebSocket evidence.
+- Added a real MV3 worker-termination recovery test that verifies durable session identity and evidence survive execution-context restart.
+- Added real WebSocket/CDP validation that exposed incorrect event casing and frame metadata assumptions in the sanitizer.
 
 ## 0.5.0 - 2026-09-01
 

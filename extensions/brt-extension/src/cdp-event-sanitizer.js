@@ -66,13 +66,14 @@ export function sanitizeCdpEvent(method, params = {}) {
       url: sanitizeUrl(params.frame?.url),
       securityOrigin: sanitizeUrl(params.frame?.securityOrigin)
     };
-  } else if (/WebSocket/.test(method)) {
+  } else if (/webSocket/.test(method)) {
+    const frame = params.response || {};
     safe.websocket = {
       requestId: params.requestId,
       url: sanitizeUrl(params.url),
-      opcode: params.opcode,
+      opcode: frame.opcode ?? params.opcode,
       timestamp: params.timestamp,
-      payloadLength: params.payloadData?.length || 0
+      payloadLength: (frame.payloadData ?? params.payloadData)?.length || 0
     };
   } else {
     safe.metadata = {
