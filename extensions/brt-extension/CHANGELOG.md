@@ -1,6 +1,6 @@
 # Extension changelog
 
-## 0.6.0 - Unreleased
+## 0.6.0 - 2026-09-14
 
 ### Added
 
@@ -25,6 +25,12 @@
 - Service-worker recovery records an explicit recovery diagnostic and preserves observable producer-gap evidence through durable export.
 - Corrected CDP WebSocket handling to match real Chromium `Network.webSocket*` event casing and `params.response` frame metadata.
 
+### Fixed
+
+- Narrowed analytics/telemetry classification so Google Maps logging endpoints such as `log204`, `gen_204`, and eligible Google `/log` traffic are excluded from Parser Blueprint workflow evidence without misclassifying Street View `/v1/tile` traffic or Maps `/maps/_/wa/...wasm` resources.
+- Parser Blueprint now re-evaluates retained network evidence with the current analytics classifier instead of trusting stale stored classifications.
+- Producer sequence gaps are surfaced as structured Blueprint evidence gaps with bounded detailed Markdown rendering; IndexedDB recovery remains contextual evidence rather than being labeled as a gap.
+
 ### Tests
 
 - Added IndexedDB schema, atomic write, replacement, deletion, migration, flush, recovery, and lifecycle regression coverage.
@@ -35,6 +41,7 @@
 - Added real-Chromium smoke coverage for capture lifecycle, frame/document provenance, DOM-to-network correlation, optional host permissions, MV3 IndexedDB recovery, and Deep-mode CDP/WebSocket evidence.
 - Added a real MV3 worker-termination recovery test that verifies durable session identity and evidence survive execution-context restart.
 - Added real WebSocket/CDP validation that exposed incorrect event casing and frame metadata assumptions in the sanitizer.
+- Added Google Maps regression coverage for analytics classification, stale stored classifications, producer sequence gaps, and bounded evidence-gap Markdown output.
 
 ## 0.5.0 - 2026-09-01
 
