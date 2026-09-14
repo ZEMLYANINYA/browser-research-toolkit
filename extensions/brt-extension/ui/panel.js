@@ -8,6 +8,7 @@ import {
   sessionDurationMs,
   summarizeNetwork
 } from './dashboard-metrics.js';
+import { createRefreshGate } from './refresh-gate.js';
 
 const $ = (id) => document.getElementById(id);
 let currentSession = null;
@@ -618,7 +619,7 @@ async function exportBlueprintMarkdown() {
   );
 }
 
-async function refresh() {
+async function performRefresh() {
   const [tabRes, sessionRes] = await Promise.all([call({ type:'BRT_GET_ACTIVE_TAB' }), call({ type:'BRT_GET_SESSION' })]);
   const tab = tabRes?.tab;
   const previousSessionId =
@@ -646,6 +647,13 @@ async function refresh() {
   $('sessionClock').textContent = compactDuration(sessionDurationMs(currentSession));
   renderOverview(currentSession); renderTimeline(currentSession); renderNetwork(currentSession); renderAntiBot(currentSession); renderSources(currentSession); renderSession(currentSession);
   await renderResearchLab().catch(() => {});
+}
+
+const refreshGate =
+  createRefreshGate(performRefresh);
+
+function refresh() {
+  return refreshGate.request();
 }
 
 async function doSearch() {
