@@ -13,6 +13,7 @@ if (version) {
 
 let activeTabSnapshot = null;
 let replayingStart = false;
+let startInFlight = false;
 let refreshToken = 0;
 
 function setActiveTabSnapshot(tab) {
@@ -52,6 +53,8 @@ if (startButton) {
       event.preventDefault();
       event.stopImmediatePropagation();
 
+      if (startInFlight) return;
+
       const snapshot = activeTabSnapshot;
       const originPattern = captureOriginPattern(snapshot?.url);
 
@@ -63,6 +66,7 @@ if (startButton) {
         return;
       }
 
+      startInFlight = true;
       startButton.setAttribute('aria-busy', 'true');
 
       /*
@@ -80,10 +84,24 @@ if (startButton) {
             return;
           }
 
-          const [currentTab] = await chrome.tabs.query({
-            active: true,
-            currentWindow: true
-          });
+          /*
+           * Re-check the exact tab that the user approved instead of asking
+           * Chrome for "the current window" again. Permission UI can briefly
+           * perturb focus/window resolution even though the research tab itself
+           * is still alive and active.
+           */
+          let currentTab = null;
+
+          try {
+            currentTab = await chrome.tabs.get(snapshot.id);
+          } catch {
+            startButton.title =
+              'The approved research tab is no longer available.';
+            showStartMessage(
+              'Capture not started: the approved tab was closed or replaced. Click Start again on the page you want to inspect.'
+            );
+            return;
+          }
 
           const currentPattern =
             captureOriginPattern(currentTab?.url);
@@ -91,13 +109,14 @@ if (startButton) {
           setActiveTabSnapshot(currentTab || null);
 
           if (
-            currentTab?.id !== snapshot.id ||
+            currentTab?.active !== true ||
+            currentTab?.windowId !== snapshot.windowId ||
             currentPattern !== result.originPattern
           ) {
             startButton.title =
               'The active tab changed while host access was being granted.';
             showStartMessage(
-              'Capture not started: the active tab changed. Click Start again on the page you want to inspect.'
+              'Capture not started: the approved tab or host changed. Click Start again on the page you want to inspect.'
             );
             return;
           }
@@ -119,6 +138,7 @@ if (startButton) {
           );
         })
         .finally(() => {
+          startInFlight = false;
           startButton.removeAttribute('aria-busy');
         });
     },
