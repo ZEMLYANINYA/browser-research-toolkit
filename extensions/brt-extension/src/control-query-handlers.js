@@ -3,6 +3,7 @@ import { generateParserBlueprint } from './parser-blueprint.js';
 import { renderParserBlueprintMarkdown } from './parser-blueprint-markdown.js';
 import { buildApiAnalysis } from './network-analysis.js';
 import { searchSession } from './session-search.js';
+import { createSessionSummary } from './session-summary.js';
 
 export function createControlQueryHandlers({
   activeTab,
@@ -25,10 +26,18 @@ export function createControlQueryHandlers({
       };
     },
 
-    BRT_GET_SESSION: async () => {
+    BRT_GET_SESSION: async message => {
       const tab = await activeTab();
       if (!tab?.id) return { session: null };
-      return { session: await loadSession(tab.id) };
+
+      const session = await loadSession(tab.id);
+
+      return {
+        session:
+          message?.summary === true
+            ? createSessionSummary(session)
+            : session
+      };
     },
 
     BRT_GET_PARSER_BLUEPRINT: async () => {

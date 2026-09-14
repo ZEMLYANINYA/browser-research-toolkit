@@ -12,6 +12,19 @@ import { createRefreshGate } from './refresh-gate.js';
 
 const $ = (id) => document.getElementById(id);
 let currentSession = null;
+let currentDetailSession = null;
+let activePanelTab = 'overview';
+
+const detailSessionTabs = new Set([
+  'timeline',
+  'network',
+  'graph',
+  'antibot',
+  'sources',
+  'lab',
+  'session'
+]);
+
 let currentDiagnostics = { correlations: [], diagnostics: [], api: [] };
 let currentBlueprint = null;
 let currentBlueprintMarkdown = '';
@@ -21,6 +34,40 @@ async function call(message) {
   const response = await chrome.runtime.sendMessage(message);
   if (response?.ok === false) throw new Error(response.error || 'Unknown extension error');
   return response;
+}
+
+function detailSessionForView() {
+  if (
+    currentDetailSession &&
+    currentDetailSession.sessionId ===
+      currentSession?.sessionId
+  ) {
+    return currentDetailSession;
+  }
+
+  return currentSession;
+}
+
+async function loadDetailSession() {
+  const response =
+    await call({
+      type: 'BRT_GET_SESSION'
+    });
+
+  const session =
+    response?.session || null;
+
+  if (
+    currentSession?.sessionId &&
+    session?.sessionId !==
+      currentSession.sessionId
+  ) {
+    return null;
+  }
+
+  currentDetailSession = session;
+
+  return session;
 }
 
 function escapeHtml(value) {
@@ -75,22 +122,51 @@ function metricCard(label, value, meta = '') {
 
 function renderStats(session) {
   const c = session?.counters || {};
+  const counts = session?.summaryCounts || {};
+  const summaryMode = session?.summaryMode === true;
   const duration = sessionDurationMs(session);
-  const retained = session?.timeline?.length || 0;
+
+  const retained = summaryMode
+    ? counts.timeline ?? session?.timeline?.length ?? 0
+    : session?.timeline?.length || 0;
+
+  const indexedSources = summaryMode
+    ? counts.sourcesIndexed ?? 0
+    : (session?.sources || []).filter(source => source.indexed).length;
+
+  const metadataOnlySources = summaryMode
+    ? counts.sourcesMetadataOnly ?? 0
+    : (session?.sources || []).filter(
+        source => source.fetchPolicy?.decision === 'blocked'
+      ).length;
+
+  const retainedAntiBot = summaryMode
+    ? counts.antiBotSignals ?? 0
+    : session?.antiBot?.signals?.length || 0;
+
+  const correlations = summaryMode
+    ? counts.correlations ?? 0
+    : session?.correlations?.length || 0;
+
   const seen = session?.retention?.timelineSeen || retained;
-  const retentionPct = seen ? Math.round((retained / seen) * 100) : 100;
+  const retentionPct = seen
+    ? Math.round((retained / seen) * 100)
+    : 100;
+
   const values = [
     ['Requests', c.requests || 0, `${c.responses || 0} responses`],
     ['DOM events', c.domEvents || 0, `${c.navigations || 0} navigations`],
-    ['Sources', c.sources || 0, `${(session?.sources || []).filter(source => source.indexed).length} indexed · ${(session?.sources || []).filter(source => source.fetchPolicy?.decision === 'blocked').length} metadata-only`],
+    ['Sources', c.sources || 0, `${indexedSources} indexed · ${metadataOnlySources} metadata-only`],
     ['Evidence', retained, `${retentionPct}% retained`],
-    ['Anti-bot', session?.antiBot?.stats?.totalSeen || 0, `${session?.antiBot?.signals?.length || 0} retained`],
-    ['Correlations', session?.correlations?.length || 0, 'candidate relationships'],
+    ['Anti-bot', session?.antiBot?.stats?.totalSeen || 0, `${retainedAntiBot} retained`],
+    ['Correlations', correlations, 'candidate relationships'],
     ['Tasks', c.tasksCreated || 0, `${c.tasksCompleted || 0} completed · ${c.tasksRateLimited || 0} rate-limited`],
     ['Storage', formatBytes(session?.storageStats?.approxBytes || 0), `${session?.retention?.timelineEvicted || 0} timeline evicted`],
     ['Duration', compactDuration(duration), session?.running ? 'live session' : 'captured session']
   ];
-  $('stats').innerHTML = values.map(v => metricCard(...v)).join('');
+
+  $('stats').innerHTML =
+    values.map(v => metricCard(...v)).join('');
 }
 
 function pointsFor(values, width, height, max) {
@@ -438,20 +514,80 @@ function renderSession(session) {
   $('tasks').innerHTML = tasks.slice().reverse().map(task => `<div class="item"><div class="itemHeader"><span class="itemTitle">${escapeHtml(task.name)} · ${escapeHtml(task.status)}</span><span class="badge">attempt ${escapeHtml(task.attempt)}/${escapeHtml(task.maxAttempts)}</span></div><div class="muted">${escapeHtml(task.taskId)}${task.error ? ` · ${escapeHtml(task.error.message)}` : ''}</div><div class="muted">wait ${escapeHtml(task.waitMs || 0)} ms · queue ${escapeHtml(task.queueDepth || 0)}${task.rateKey ? ` · ${escapeHtml(task.rateKey)}` : ''}</div>${['queued','running','retrying'].includes(task.status) ? `<button class="button cancelTaskBtn" data-task-id="${escapeHtml(task.taskId)}">Cancel</button>` : ''}</div>`).join('') || '<div class="muted">No tasks.</div>';
 }
 
-function showNetworkDetails(index) { const record = currentSession?.network?.[index]; if (record) $('networkDetails').innerHTML = `<pre class="snippet">${escapeHtml(JSON.stringify(record, null, 2))}</pre>`; }
-function showSourceDetails(index) { const source = currentSession?.sources?.[index]; if (source) $('sourceDetails').innerHTML = `<pre class="snippet">${escapeHtml(JSON.stringify({ ...source, text: source.text?.slice(0,12000) }, null, 2))}</pre>`; }
+function showNetworkDetails(index) {
+  const session =
+    detailSessionForView();
 
-async function renderResearchLab() {
+  const record =
+    session?.network?.[index];
+
+  if (record) {
+    $('networkDetails').innerHTML =
+      `<pre class="snippet">${escapeHtml(JSON.stringify(record, null, 2))}</pre>`;
+  }
+}
+
+function showSourceDetails(index) {
+  const session =
+    detailSessionForView();
+
+  const source =
+    session?.sources?.[index];
+
+  if (source) {
+    $('sourceDetails').innerHTML =
+      `<pre class="snippet">${escapeHtml(JSON.stringify({
+        ...source,
+        text: source.text?.slice(0, 12000)
+      }, null, 2))}</pre>`;
+  }
+}
+
+async function renderResearchLab(session = detailSessionForView()) {
   currentDiagnostics = await call({ type:'BRT_GET_DIAGNOSTICS' });
-  renderAntiBot(currentSession);
+  renderAntiBot(session);
   $('correlations').innerHTML = (currentDiagnostics.correlations || []).map(item => `<div class="item"><div class="itemHeader"><span class="itemTitle">${escapeHtml(item.fromEvent?.label || 'event')} → ${escapeHtml(item.toEvent?.label || 'event')}</span><span class="badge">confidence ${escapeHtml(item.confidence)} · ${escapeHtml(item.manualStatus || 'unreviewed')}</span></div><div class="muted">${escapeHtml((item.evidence || []).join(' · '))}</div><div class="labelRow"><button class="button" data-label-id="${escapeHtml(item.relationshipId)}" data-label="related">RELATED</button><button class="button" data-label-id="${escapeHtml(item.relationshipId)}" data-label="not-related">NOT RELATED</button></div></div>`).join('') || '<div class="muted">No candidate relationships yet.</div>';
   $('diagnostics').innerHTML = (currentDiagnostics.diagnostics || []).map(item => `<div class="item"><div class="itemHeader"><span class="itemTitle">${escapeHtml(item.kind)}</span><span class="badge">${escapeHtml(item.at)}</span></div><pre class="snippet">${escapeHtml(JSON.stringify(item,null,2))}</pre></div>`).join('') || '<div class="muted">No diagnostics.</div>';
   $('apiExplorer').innerHTML = (currentDiagnostics.api || []).map(item => `<div class="item"><div class="itemHeader"><span class="itemTitle">${escapeHtml(item.key)}</span><span class="badge">${escapeHtml(item.count)} calls</span></div><div class="muted">${escapeHtml(item.firstParty === true ? 'first-party' : item.firstParty === false ? 'third-party' : 'unknown')} · GraphQL: ${escapeHtml(item.graphqlOperations?.join(', ') || 'none')}</div></div>`).join('') || '<div class="muted">No API families yet.</div>';
-  renderCorrelationGraph(currentSession);
+  renderCorrelationGraph(session);
 }
 
 function renderOverview(session) {
-  renderStats(session); renderActivityChart(session); renderHealth(session); renderProvenance(session); renderNetworkPulse(session); renderRecentEvidence(session);
+  renderStats(session);
+  renderActivityChart(session);
+  renderHealth(session);
+  renderProvenance(session);
+  renderNetworkPulse(session);
+  renderRecentEvidence(session);
+
+  if (session?.summaryMode === true) {
+    const activity =
+      $('activityChart')?.closest('.card')
+        ?.querySelector('.cardHeader p');
+
+    const provenance =
+      $('provenancePanel')?.closest('.card')
+        ?.querySelector('.cardHeader p');
+
+    const network =
+      $('networkPulse')?.closest('.card')
+        ?.querySelector('.cardHeader p');
+
+    if (activity) {
+      activity.textContent =
+        'Recent retained event tail';
+    }
+
+    if (provenance) {
+      provenance.textContent =
+        'Provenance within the recent retained tail';
+    }
+
+    if (network) {
+      network.textContent =
+        'Recent transports and hosts';
+    }
+  }
 }
 
 function downloadArtifact(content, type, filename) {
@@ -620,13 +756,42 @@ async function exportBlueprintMarkdown() {
 }
 
 async function performRefresh() {
-  const [tabRes, sessionRes] = await Promise.all([call({ type:'BRT_GET_ACTIVE_TAB' }), call({ type:'BRT_GET_SESSION' })]);
-  const tab = tabRes?.tab;
+  const [tabRes, sessionRes] =
+    await Promise.all([
+      call({
+        type: 'BRT_GET_ACTIVE_TAB'
+      }),
+      call({
+        type: 'BRT_GET_SESSION',
+        summary: true
+      })
+    ]);
+
+  const tab =
+    tabRes?.tab;
+
   const previousSessionId =
     currentSession?.sessionId || null;
 
   currentSession =
     sessionRes?.session || null;
+
+  const currentSessionId =
+    currentSession?.sessionId || null;
+
+  const sessionChanged =
+    previousSessionId !==
+    currentSessionId;
+
+  if (sessionChanged) {
+    currentDetailSession = null;
+
+    currentDiagnostics = {
+      correlations: [],
+      diagnostics: [],
+      api: []
+    };
+  }
 
   if (
     currentBlueprintSessionId &&
@@ -642,11 +807,37 @@ async function performRefresh() {
   ) {
     resetBlueprintView();
   }
-  $('pageInfo').textContent = currentSession?.pageUrl ? `Captured: ${compactUrl(currentSession.pageUrl)}` : tab ? `Active: ${tab.title || '(untitled)'} · ${compactUrl(tab.url || '')}` : 'No active page';
-  setStatus(Boolean(currentSession?.running), currentSession);
-  $('sessionClock').textContent = compactDuration(sessionDurationMs(currentSession));
-  renderOverview(currentSession); renderTimeline(currentSession); renderNetwork(currentSession); renderAntiBot(currentSession); renderSources(currentSession); renderSession(currentSession);
-  await renderResearchLab().catch(() => {});
+
+  $('pageInfo').textContent =
+    currentSession?.pageUrl
+      ? `Captured: ${compactUrl(currentSession.pageUrl)}`
+      : tab
+        ? `Active: ${tab.title || '(untitled)'} · ${compactUrl(tab.url || '')}`
+        : 'No active page';
+
+  setStatus(
+    Boolean(currentSession?.running),
+    currentSession
+  );
+
+  $('sessionClock').textContent =
+    compactDuration(
+      sessionDurationMs(currentSession)
+    );
+
+  if (activePanelTab === 'overview') {
+    renderOverview(currentSession);
+    return;
+  }
+
+  if (
+    sessionChanged &&
+    detailSessionTabs.has(activePanelTab)
+  ) {
+    await renderDetailTab(
+      activePanelTab
+    );
+  }
 }
 
 const refreshGate =
@@ -654,6 +845,40 @@ const refreshGate =
 
 function refresh() {
   return refreshGate.request();
+}
+async function refreshAfterUserAction() {
+  const detailTab =
+    detailSessionTabs.has(activePanelTab)
+      ? activePanelTab
+      : null;
+
+  const sessionIdBefore =
+    currentSession?.sessionId || null;
+
+  await refresh();
+
+  if (
+    !detailTab ||
+    activePanelTab !== detailTab
+  ) {
+    return;
+  }
+
+  const sessionIdAfter =
+    currentSession?.sessionId || null;
+
+  /*
+   * performRefresh() already reloads the active detail tab
+   * when the active session changes. Avoid a duplicate full IPC.
+   */
+  if (
+    sessionIdBefore !==
+    sessionIdAfter
+  ) {
+    return;
+  }
+
+  await renderDetailTab(detailTab);
 }
 
 async function doSearch() {
@@ -679,10 +904,117 @@ async function exportCurrent() {
   );
 }
 
-function openTab(name) {
-  const tab = document.querySelector(`.tab[data-tab="${name}"]`); if (!tab) return;
-  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active')); document.querySelectorAll('.tabPane').forEach(x => x.classList.remove('active'));
-  tab.classList.add('active'); $(`tab-${name}`).classList.add('active');
+async function renderDetailTab(name) {
+  if (!detailSessionTabs.has(name)) {
+    return;
+  }
+
+  const session =
+    await loadDetailSession();
+
+  if (
+    !session ||
+    activePanelTab !== name
+  ) {
+    return;
+  }
+
+  if (name === 'timeline') {
+    renderTimeline(session);
+    return;
+  }
+
+  if (name === 'network') {
+    renderNetwork(session);
+    return;
+  }
+
+  if (name === 'sources') {
+    renderSources(session);
+    return;
+  }
+
+  if (name === 'session') {
+    renderSession(session);
+    return;
+  }
+
+  if (name === 'graph') {
+    currentDiagnostics =
+      await call({
+        type: 'BRT_GET_DIAGNOSTICS'
+      });
+
+    if (activePanelTab === name) {
+      renderCorrelationGraph(session);
+    }
+
+    return;
+  }
+
+  if (name === 'antibot') {
+    currentDiagnostics =
+      await call({
+        type: 'BRT_GET_DIAGNOSTICS'
+      });
+
+    if (activePanelTab === name) {
+      renderAntiBot(session);
+    }
+
+    return;
+  }
+
+  if (name === 'lab') {
+    await renderResearchLab(session);
+  }
+}
+
+async function openTab(name) {
+  const tab =
+    document.querySelector(
+      `.tab[data-tab="${name}"]`
+    );
+
+  if (!tab) return;
+
+  activePanelTab = name;
+
+  document
+    .querySelectorAll('.tab')
+    .forEach(
+      item =>
+        item.classList.remove('active')
+    );
+
+  document
+    .querySelectorAll('.tabPane')
+    .forEach(
+      item =>
+        item.classList.remove('active')
+    );
+
+  tab.classList.add('active');
+  $(`tab-${name}`).classList.add('active');
+
+  if (!detailSessionTabs.has(name)) {
+    if (name === 'overview') {
+      renderOverview(currentSession);
+    }
+
+    return;
+  }
+
+  try {
+    await renderDetailTab(name);
+  } catch (error) {
+    if (activePanelTab === name) {
+      $('pageInfo').textContent =
+        `Detail view failed: ${
+          error?.message || error
+        }`;
+    }
+  }
 }
 
 $('sources').addEventListener(
@@ -711,7 +1043,7 @@ $('sources').addEventListener(
       currentSession?.running !== true ||
       currentSession?.importedReadOnly === true
     ) {
-      await refresh();
+      await refreshAfterUserAction();
       return;
     }
 
@@ -734,7 +1066,7 @@ $('sources').addEventListener(
         granted
       });
 
-      await refresh();
+      await refreshAfterUserAction();
     } catch (error) {
       $('pageInfo').textContent =
         `Source permission failed: ${
@@ -746,10 +1078,16 @@ $('sources').addEventListener(
   }
 );
 
-$('startBtn').addEventListener('click', async () => { await call({ type:'BRT_START', mode:$('captureMode').value, antibot:$('antiBotToggle').checked, preserveSession:true }); await refresh(); });
-$('stopBtn').addEventListener('click', async () => { await call({ type:'BRT_STOP' }); await refresh(); });
-$('clearBtn').addEventListener('click', async () => { await call({ type:'BRT_CLEAR' }); await refresh(); });
-$('refreshBtn').addEventListener('click', async () => { await call({ type:'BRT_REFRESH_SOURCES' }); setTimeout(refresh,500); });
+$('startBtn').addEventListener('click', async () => { await call({ type:'BRT_START', mode:$('captureMode').value, antibot:$('antiBotToggle').checked, preserveSession:true }); await refreshAfterUserAction(); });
+$('stopBtn').addEventListener('click', async () => { await call({ type:'BRT_STOP' }); await refreshAfterUserAction(); });
+$('clearBtn').addEventListener('click', async () => { await call({ type:'BRT_CLEAR' }); await refreshAfterUserAction(); });
+$('refreshBtn').addEventListener('click', async () => { await call({ type:'BRT_REFRESH_SOURCES' }); setTimeout(
+  () => {
+    refreshAfterUserAction()
+      .catch(() => {});
+  },
+  500
+); });
 $('exportBtn').addEventListener('click', async () => {
   try {
     await exportCurrent();
@@ -796,46 +1134,46 @@ $('blueprintMarkdownBtn').addEventListener(
     }
   }
 );
-$('markBtn').addEventListener('click', async () => { const text=$('markerText').value.trim(); if(text){ await call({ type:'BRT_MARK', text }); $('markerText').value=''; await refresh(); } });
-$('watchBtn').addEventListener('click', async () => { const path=$('watchPath').value.trim(); if(path){ await call({ type:'BRT_WATCH_ADD', path }); $('watchPath').value=''; await refresh(); } });
+$('markBtn').addEventListener('click', async () => { const text=$('markerText').value.trim(); if(text){ await call({ type:'BRT_MARK', text }); $('markerText').value=''; await refreshAfterUserAction(); } });
+$('watchBtn').addEventListener('click', async () => { const path=$('watchPath').value.trim(); if(path){ await call({ type:'BRT_WATCH_ADD', path }); $('watchPath').value=''; await refreshAfterUserAction(); } });
 $('importBtn').addEventListener('click', () => $('importFile').click());
-$('importFile').addEventListener('change', async event => { const file=event.target.files?.[0]; if(!file)return; try { const imported=JSON.parse(await file.text()); await call({ type:'BRT_IMPORT_SESSION', session:imported.session || imported }); await refresh(); } catch(error){ $('pageInfo').textContent=`Import failed: ${error.message}`; } event.target.value=''; });
+$('importFile').addEventListener('change', async event => { const file=event.target.files?.[0]; if(!file)return; try { const imported=JSON.parse(await file.text()); await call({ type:'BRT_IMPORT_SESSION', session:imported.session || imported }); await refreshAfterUserAction(); } catch(error){ $('pageInfo').textContent=`Import failed: ${error.message}`; } event.target.value=''; });
 $('searchBtn').addEventListener('click', doSearch); $('searchInput').addEventListener('keydown', e => { if(e.key==='Enter') doSearch(); });
-$('timelineFilter').addEventListener('change', () => renderTimeline(currentSession)); $('networkFilter').addEventListener('change', () => renderNetwork(currentSession)); $('networkClassFilter').addEventListener('change', () => renderNetwork(currentSession));
+$('timelineFilter').addEventListener('change', () => renderTimeline(detailSessionForView())); $('networkFilter').addEventListener('change', () => renderNetwork(detailSessionForView())); $('networkClassFilter').addEventListener('change', () => renderNetwork(detailSessionForView()));
 $('graphKindFilter').addEventListener('change', () => {
   graphState.kind = $('graphKindFilter').value || 'all';
   graphState.focusNodeId = '';
-  renderCorrelationGraph(currentSession);
+  renderCorrelationGraph(detailSessionForView());
 });
 $('graphLimit').addEventListener('change', () => {
   graphState.limit = Number($('graphLimit').value) || 18;
-  renderCorrelationGraph(currentSession);
+  renderCorrelationGraph(detailSessionForView());
 });
 $('graphHostFilter').addEventListener('input', () => {
   graphState.host = $('graphHostFilter').value.trim();
   graphState.focusNodeId = '';
-  renderCorrelationGraph(currentSession);
+  renderCorrelationGraph(detailSessionForView());
 });
 $('graphResetBtn').addEventListener('click', () => {
   graphState.kind = 'all'; graphState.host = ''; graphState.limit = 18; graphState.focusNodeId = '';
   $('graphKindFilter').value = 'all'; $('graphHostFilter').value = ''; $('graphLimit').value = '18';
   $('graphInspector').className = 'details muted';
   $('graphInspector').textContent = 'Click a node to focus its connected relationships, or click an edge to inspect its evidence.';
-  renderCorrelationGraph(currentSession);
+  renderCorrelationGraph(detailSessionForView());
 });
 $('network').addEventListener('click', event => { const button=event.target.closest('[data-network-index]'); if(button) showNetworkDetails(Number(button.dataset.networkIndex)); });
 $('sources').addEventListener('click', event => { const button=event.target.closest('[data-source-index]'); if(button) showSourceDetails(Number(button.dataset.sourceIndex)); });
 $('correlations').addEventListener('click', async event => { const button=event.target.closest('[data-label-id]'); if(!button)return; await call({ type:'BRT_LABEL_CORRELATION', relationshipId:button.dataset.labelId, status:button.dataset.label }); await renderResearchLab(); });
-$('tasks').addEventListener('click', async event => { const button = event.target.closest('.cancelTaskBtn'); if (!button) return; await call({ type: 'BRT_CANCEL_TASK', taskId: button.dataset.taskId }); await refresh(); });
+$('tasks').addEventListener('click', async event => { const button = event.target.closest('.cancelTaskBtn'); if (!button) return; await call({ type: 'BRT_CANCEL_TASK', taskId: button.dataset.taskId }); await refreshAfterUserAction(); });
 $('correlationGraph').addEventListener('click', event => {
   const nodeEl=event.target.closest('[data-node-id]'); const edgeEl=event.target.closest('[data-edge-id]');
   if(nodeEl){
     const id = nodeEl.dataset.nodeId;
     graphState.focusNodeId = graphState.focusNodeId === id ? '' : id;
-    const graph = buildCorrelationGraph({ ...(currentSession || {}), correlations:currentDiagnostics.correlations || [] }, graphOptions());
+    const graph = buildCorrelationGraph({ ...(detailSessionForView() || {}), correlations:currentDiagnostics.correlations || [] }, graphOptions());
     const node = graph.nodes.find(item => item.id === id);
     const connectedEdges = graph.edges.filter(edge => edge.from === id || edge.to === id);
-    renderCorrelationGraph(currentSession);
+    renderCorrelationGraph(detailSessionForView());
     $('graphInspector').className = 'details';
     $('graphInspector').innerHTML = `<div class="muted">${graphState.focusNodeId ? 'Focus enabled — click the node again to clear it.' : 'Focus cleared.'}</div><pre class="snippet">${escapeHtml(JSON.stringify({ node, connectedEdges }, null, 2))}</pre>`;
   } else if(edgeEl){
