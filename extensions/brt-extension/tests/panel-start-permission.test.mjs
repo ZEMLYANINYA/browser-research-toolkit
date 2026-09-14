@@ -22,11 +22,29 @@ test('capture-origin guard blocks START until explicit host access is granted', 
 
   const stopIndex = source.indexOf('event.stopImmediatePropagation()');
   const requestIndex = source.indexOf('requestCaptureOriginPermission(chrome, snapshot.url)');
+  const exactTabIndex = source.indexOf('chrome.tabs.get(snapshot.id)');
   const replayIndex = source.indexOf('startButton.click()');
 
   assert.ok(stopIndex >= 0);
   assert.ok(requestIndex > stopIndex);
-  assert.ok(replayIndex > requestIndex);
+  assert.ok(exactTabIndex > requestIndex);
+  assert.ok(replayIndex > exactTabIndex);
   assert.match(source, /if \(!result\.granted\)/);
+  assert.match(source, /currentTab\?\.active !== true/);
+  assert.match(source, /currentTab\?\.windowId !== snapshot\.windowId/);
+  assert.match(source, /currentPattern !== result\.originPattern/);
   assert.match(source, /Capture not started/);
+});
+
+test('post-permission START recheck is bound to the approved tab instead of current-window focus', async () => {
+  const source = await readFile(bootstrapUrl, 'utf8');
+  const requestIndex = source.indexOf('requestCaptureOriginPermission(chrome, snapshot.url)');
+  const postGrantSource = source.slice(requestIndex);
+
+  assert.match(postGrantSource, /chrome\.tabs\.get\(snapshot\.id\)/);
+  assert.doesNotMatch(
+    postGrantSource,
+    /chrome\.tabs\.query\(\{\s*active:\s*true,\s*currentWindow:\s*true\s*\}\)/
+  );
+  assert.match(source, /if \(startInFlight\) return;/);
 });
