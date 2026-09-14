@@ -76,6 +76,123 @@ test('GET_SESSION loads the active tab session', async () => {
   assert.deepEqual(calls.loadSession, [7]);
 });
 
+test('GET_SESSION summary mode returns a bounded lightweight session', async () => {
+  const { handlers, session, calls } = fixture();
+
+  session.timeline =
+    Array.from(
+      { length: 80 },
+      (_, index) => ({
+        sequence: index + 1,
+        kind: 'dom-event'
+      })
+    );
+
+  session.network =
+    Array.from(
+      { length: 70 },
+      (_, index) => ({
+        sequence: index + 1,
+        kind: 'network-request'
+      })
+    );
+
+  session.sources =
+    Array.from(
+      { length: 60 },
+      (_, index) => ({
+        id: `source-${index}`,
+        text: 'x'.repeat(1000)
+      })
+    );
+
+  session.runtime = [
+    {
+      path: 'window.secret',
+      value: 'should-not-cross-summary-boundary'
+    }
+  ];
+
+  session.html =
+    '<html>' +
+    'A'.repeat(10_000) +
+    '</html>';
+
+  session.antiBot = {
+    enabled: true,
+    signals:
+      Array.from(
+        { length: 100 },
+        (_, index) => ({
+          kind: `signal-${index}`
+        })
+      )
+  };
+
+  const response =
+    await handlers.BRT_GET_SESSION({
+      summary: true
+    });
+
+  const summary =
+    response.session;
+
+  assert.equal(
+    summary.summaryMode,
+    true
+  );
+
+  assert.equal(
+    summary.summaryCounts.timeline,
+    80
+  );
+
+  assert.equal(
+    summary.summaryCounts.network,
+    70
+  );
+
+  assert.equal(
+    summary.summaryCounts.sources,
+    60
+  );
+
+  assert.equal(
+    summary.timeline.length,
+    50
+  );
+
+  assert.equal(
+    summary.network.length,
+    50
+  );
+
+  assert.deepEqual(
+    summary.sources,
+    []
+  );
+
+  assert.deepEqual(
+    summary.antiBot.signals,
+    []
+  );
+
+  assert.deepEqual(
+    summary.runtime,
+    []
+  );
+
+  assert.equal(
+    summary.html,
+    ''
+  );
+
+  assert.deepEqual(
+    calls.loadSession,
+    [7]
+  );
+});
+
 test('GET_TASKS scopes task listing to the active tab', async () => {
   const { handlers, calls } = fixture();
 

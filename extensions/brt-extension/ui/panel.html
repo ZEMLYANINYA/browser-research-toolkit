@@ -9,7 +9,7 @@
 <body>
   <header class="topbar">
     <div class="brandBlock">
-      <div class="brandRow"><span class="brandMark">BRT</span><h1>Browser Research Toolkit</h1><span class="version">v0.5.0</span></div>
+      <div class="brandRow"><span class="brandMark">BRT</span><h1>Browser Research Toolkit</h1><span id="extensionVersion" class="version"></span></div>
       <div id="pageInfo" class="muted pageInfo">No active page</div>
     </div>
     <div class="statusStack">
@@ -20,7 +20,7 @@
 
   <section class="controlDeck">
     <div class="controlPrimary">
-      <button id="startBtn" class="button primary">Start capture</button>
+      <button id="startBtn" class="button primary" disabled>Start capture</button>
       <button id="stopBtn" class="button">Stop</button>
       <label class="selectShell">Mode<select id="captureMode"><option value="light">LIGHT</option><option value="standard" selected>STANDARD</option><option value="deep">DEEP / CDP</option></select></label>
       <label class="toggle"><input id="antiBotToggle" type="checkbox" checked /><span></span>Anti-bot</label>
@@ -165,6 +165,7 @@
     </section>
   </main>
 
+  <script type="module" src="panel-bootstrap.js"></script>
   <script type="module" src="panel.js"></script>
 </body>
 </html>

@@ -13,9 +13,29 @@ export function formatBytes(bytes) {
 
 export function sessionDurationMs(session) {
   const events = session?.timeline || [];
-  const times = events.map(item => finiteNumber(item.wallTime, NaN)).filter(Number.isFinite);
-  const start = finiteNumber(session?.startedAt, times.length ? Math.min(...times) : Date.now());
-  const end = session?.running ? Date.now() : finiteNumber(session?.updatedAt, times.length ? Math.max(...times) : start);
+  const times = events
+    .map(item => finiteNumber(item.wallTime, NaN))
+    .filter(value => Number.isFinite(value) && value > 0);
+
+  const rawStart = Number(session?.startedAt);
+  const start = Number.isFinite(rawStart) && rawStart > 0
+    ? rawStart
+    : times.length
+      ? Math.min(...times)
+      : null;
+
+  if (start == null) return 0;
+
+  if (session?.running) {
+    return Math.max(0, Date.now() - start);
+  }
+
+  const rawEnd = Number(session?.updatedAt);
+  const fallbackEnd = times.length ? Math.max(...times) : start;
+  const end = Number.isFinite(rawEnd) && rawEnd >= start
+    ? rawEnd
+    : fallbackEnd;
+
   return Math.max(0, end - start);
 }
 

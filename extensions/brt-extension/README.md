@@ -10,10 +10,10 @@ fingerprint spoofer, or an access-control bypass tool.
 
 ## Version
 
-Extension release line: **0.5.0**
+Extension release line: **0.6.0**
 
 The extension uses its own version line independently from the TypeScript core package in the repository. Git tags should
-therefore use names such as `extension-v0.5.0` rather than a bare `v0.5.0`.
+therefore use names such as `extension-v0.6.0` rather than a bare `v0.6.0`.
 
 ## Main capabilities
 
@@ -24,6 +24,7 @@ therefore use names such as `extension-v0.5.0` rather than a bare `v0.5.0`.
 - DOM interaction and mutation evidence.
 - Frame-aware capture across top-level pages and subframes.
 - SPA and hard-navigation evidence.
+- Navigation-preserving capture on the explicitly approved research origin.
 - Performance summaries and Deep-mode detail.
 - Runtime snapshots and explicit watched globals.
 - First-party source indexing with bounded retention.
@@ -151,6 +152,7 @@ Parser Blueprint is a **derived artifact**, not part of the persisted raw sessio
 Generation is explicit and on demand. The normal side-panel refresh loop does not continuously recompute the Blueprint. If the current session advances after a Blueprint was generated, Blueprint export refreshes the derived artifact before writing JSON or Markdown.
 
 The output describes observed implementation requirements such as preserving cookies, refreshing document-scoped hidden state, or reproducing classic form semantics. It does not generate challenge bypass, CAPTCHA solving, token replay, or exploit logic.
+
 ## Source indexing policy
 
 The extension uses a fail-closed external-source policy:
@@ -160,13 +162,30 @@ The extension uses a fail-closed external-source policy:
 - A blocked third-party script is retained as metadata-only source evidence with a policy reason.
 - Third-party source bodies are not fetched by default. Access is granted explicitly per origin through a user-triggered optional host-permission request.
 - Granting one third-party source origin does not authorize other origins. The current session retains the approved origin patterns in `thirdPartySourceHosts`.
-- Denying an optional host-permission request leaves capture running and retains the source as metadata-only evidence with an explicit diagnostic.
+- Denying an optional third-party source permission leaves capture running and retains the source as metadata-only evidence with an explicit diagnostic.
 - Unsupported schemes and invalid source/page URLs are rejected.
 - Source downloads are timeout-bound, rate-limited, byte-bounded, character-bounded, and redacted before storage.
 - Source records retain document/frame observations even when the same external URL is deduplicated across multiple frames.
 - First-party source-fetch policy remains anchored to the canonical top-level page URL; an iframe URL does not redefine that boundary.
 
 This is intentionally stricter than merely fetching a third-party script and discarding its body afterward.
+
+## Capture-origin permission and hard navigation
+
+`activeTab` is still the temporary authority used to begin a user-selected capture. For a navigation-preserving run, the side
+panel also requests optional host access for the **specific HTTP(S) origin currently being researched** when the user clicks
+**Start capture**. The request is tied directly to that explicit user gesture and never expands to all HTTP(S) origins.
+
+If the user denies that capture-origin permission, BRT does not start the navigation-preserving run. This avoids reporting a
+session as durable across hard navigations when Chrome would be unable to reinject the bridge/agent after document replacement.
+
+A hard navigation that remains on the approved origin can therefore reinject capture into the committed top-level document.
+A top-level navigation to a different, unapproved origin does **not** silently broaden permissions. If reinjection is unavailable,
+the existing fail-closed continuity rule remains authoritative: the session becomes `interrupted` and records
+`capture-continuity-lost` instead of falsely remaining `running`.
+
+Third-party source-host grants are separate from this capture-origin permission. They authorize bounded extension-origin source
+fetches for specifically approved source origins and do not redefine the top-level research origin.
 
 ## Page-event integrity hardening
 
@@ -214,7 +233,7 @@ The extension currently requests:
 
 | Permission | Why it is used |
 | --- | --- |
-| `activeTab` | Temporary access to the user-selected research tab instead of permanent access to every web origin. |
+| `activeTab` | Temporary authority to begin capture on the user-selected research tab. |
 | `scripting` | Inject the isolated bridge and MAIN-world research agent on demand after the user starts capture. |
 | `sidePanel` | Provide the research dashboard. |
 | `tabs` | Resolve the active tab and lifecycle. |
@@ -222,8 +241,8 @@ The extension currently requests:
 | `unlimitedStorage` | Allow larger bounded research sessions without a small extension quota becoming the primary limit. |
 | `webNavigation` | Record browser-controlled hard-navigation provenance. |
 | `debugger` | Optional CDP-assisted Deep mode. |
-| Optional HTTP(S) host access | Declared through `optional_host_permissions`; requested only for a specific source origin after an explicit user action. It is not granted globally at installation time. |
-| `http://*/*`, `https://*/*` | Optional host-permission declaration surface only. BRT requests access to a specific source origin from an explicit user action; ordinary capture relies on `activeTab` plus `scripting`. |
+| Optional HTTP(S) host access | Declared through `optional_host_permissions`; requested only from explicit user gestures for the current capture origin or a specifically approved third-party source origin. |
+| `http://*/*`, `https://*/*` | Optional declaration surface only. BRT never requests blanket runtime access to all web origins. |
 
 `debugger` is powerful and intentionally visible to the user. Deep mode is optional; Light and Standard modes do not require
 an active debugger attachment.
@@ -254,6 +273,8 @@ npm run verify
 - Content-script/service-worker/side-panel file existence checks.
 - Page-event protocol drift detection.
 - Unit tests for protocol validation.
+- Capture-origin permission derivation and denied-permission fail-closed tests.
+- Session-duration regression coverage for stopped/unstarted sessions.
 - Source-fetch policy tests.
 - Redaction regression tests.
 - DOM/network correlation boundary tests.
@@ -261,6 +282,7 @@ npm run verify
 - Parser Blueprint transport, workflow, form, state-carrier, signal-separation, renderer, and side-panel integration tests.
 - End-to-end Parser Blueprint acceptance fixtures for XHR/API, classic POST/navigation, dynamic hidden/view-state fields, analytics plus protection, affinity-cookie metadata, and deterministic ordering.
 - Reproducible local top-frame/cross-origin-iframe browser fixture under `tests/fixtures/frame-aware/`.
+- Real-Chromium validation that an explicitly approved capture origin survives same-origin hard navigation while an unapproved cross-origin top-level navigation still interrupts capture.
 
 ## Known limitations
 
@@ -268,6 +290,7 @@ npm run verify
 - Deep mode adds CDP evidence but does not make every iframe/page-world event equivalent to a browser-controlled event.
 - The MAIN-world transport is page-observable and must be treated as lower-integrity evidence.
 - First-party source classification currently means **same hostname**, not registrable-domain ownership.
+- A top-level navigation to a different origin is not auto-authorized; without a prior explicit grant it interrupts page-level capture and records a continuity diagnostic.
 - Redaction is heuristic and should not be treated as a DLP system.
 - The extension is designed for Chromium-family Manifest V3 behavior and has not been generalized to every browser engine.
 

@@ -4,9 +4,9 @@ Use this checklist for the `extension-*` release line.
 
 ## Code and protocol
 
-- [ ] `extension/manifest.json` version matches the intended release.
-- [ ] `extension/package.json` version matches the manifest.
-- [ ] `npm run verify` passes from `extension/`.
+- [ ] `extensions/brt-extension/manifest.json` version matches the intended release.
+- [ ] `extensions/brt-extension/package.json` version matches the manifest.
+- [ ] `npm --prefix extensions/brt-extension run verify` passes.
 - [ ] Every page-agent `emit()` kind is represented in `PAGE_EVENT_KINDS`.
 - [ ] The isolated bridge allowlist matches the protocol list.
 - [ ] New page-originated events include generation and run ID.
@@ -29,8 +29,13 @@ Use this checklist for the `extension-*` release line.
 ## Permissions
 
 - [ ] Review every manifest permission.
-- [ ] Explain any newly added permission in `extension/README.md` and `docs/SECURITY_MODEL.md`.
+- [ ] Explain any newly added or repurposed permission in `extensions/brt-extension/README.md` and `docs/extension/SECURITY_MODEL.md`.
 - [ ] Confirm `externally_connectable` is absent unless a future design explicitly requires and reviews it.
+- [ ] Capture START requests only the specific current HTTP(S) research origin, never blanket runtime access to all origins.
+- [ ] Capture-origin permission is requested directly from an explicit user gesture.
+- [ ] Denied capture-origin permission fails closed before `BRT_START` is sent.
+- [ ] Third-party source-host grants remain separate from capture-origin authority and are still explicit per-origin opt-ins.
+- [ ] A new top-level origin is never auto-authorized from a navigation callback.
 
 ## Browser smoke test
 
@@ -39,11 +44,17 @@ Use this checklist for the `extension-*` release line.
 - [ ] Start/stop Standard mode.
 - [ ] Start Deep mode and verify CDP state is correctly shown.
 - [ ] Verify Deep attach failure falls back visibly rather than silently.
-- [ ] Verify network requests/responses appear.
+- [ ] Verify the Start gesture requests only the current research origin.
+- [ ] Verify denied capture-origin permission does not start capture.
+- [ ] Verify a same-origin hard navigation preserves the same running session and reinjects the page bridge/agent.
+- [ ] Verify an unapproved cross-origin top-level navigation becomes `interrupted` with `capture-continuity-lost` rather than remaining falsely `running`.
+- [ ] Verify network requests/responses appear after a same-origin hard navigation.
 - [ ] Verify DOM evidence appears without protected input values.
 - [ ] Verify source list shows first-party indexed sources.
 - [ ] Verify third-party sources are metadata-only by default and no background source request is made.
 - [ ] Verify session persists across side-panel close/reopen.
+- [ ] Verify stopped/unstarted session duration does not fall back to Unix-epoch elapsed time.
+- [ ] Verify the displayed extension version matches `manifest.json`.
 - [ ] Verify export/import on a non-sensitive test session.
 - [ ] Generate Parser Blueprint from a non-sensitive session and inspect the side-panel output.
 - [ ] Export Parser Blueprint as JSON and Markdown.
@@ -53,6 +64,7 @@ Use this checklist for the `extension-*` release line.
 ## Long-session smoke test
 
 - [ ] Run on a noisy SPA for at least 30 minutes.
+- [ ] Include at least one real same-origin top-level document navigation when the target supports it.
 - [ ] Confirm timeline/network/source counts remain bounded.
 - [ ] Confirm storage stats and eviction counters move as expected.
 - [ ] Confirm task queue does not grow without bound.
@@ -60,24 +72,18 @@ Use this checklist for the `extension-*` release line.
 
 ## Documentation
 
-- [ ] `extension/README.md` matches actual capabilities.
-- [ ] `extension/CHANGELOG.md` contains the release notes.
-- [ ] `docs/EXTENSION_ARCHITECTURE.md` reflects new components/data flow.
-- [ ] `docs/SECURITY_MODEL.md` reflects new trust boundaries/permissions.
-- [ ] Root README links to `extension/`.
+- [ ] `extensions/brt-extension/README.md` matches actual capabilities and release version.
+- [ ] `extensions/brt-extension/CHANGELOG.md` contains the release notes.
+- [ ] `docs/extension/EXTENSION_ARCHITECTURE.md` reflects new components/data flow.
+- [ ] `docs/extension/SECURITY_MODEL.md` reflects new trust boundaries/permissions.
+- [ ] Root README links to `extensions/brt-extension/`.
 
 ## Git
 
 Recommended tag format:
 
 ```text
-extension-v0.4.0
-```
-
-Recommended commit message for the first public extension release:
-
-```text
-feat(extension): add BRT MV3 research extension v0.4.0
+extension-v0.6.0
 ```
 
 Before tagging:
@@ -85,12 +91,12 @@ Before tagging:
 ```bash
 git status
 git diff --check
-git diff --stat
 npm ci
 npm run typecheck
 npm run build
 npm test
-(cd extension && npm run verify)
+npm --prefix extensions/brt-extension run verify
+npm run test:browser:all
 ```
 
-Then commit, push, wait for both core and extension CI, and only then create the extension tag/release.
+Then push the release candidate, wait for both core and extension CI, repeat the real-site control smoke if needed, and only then create the extension tag/release.
