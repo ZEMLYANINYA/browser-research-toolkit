@@ -30,6 +30,7 @@ import { createCaptureRouting } from './capture-routing.js';
 import { classifyNetwork, graphqlFinding, endpointFamily } from './network-analysis.js';
 import { sanitizeCdpEvent } from './cdp-event-sanitizer.js';
 import { timelineLabel } from './timeline-label.js';
+import { createSessionUpdateBroadcaster } from './session-update-broadcaster.js';
 
 
 const sessions = new Map();
@@ -48,6 +49,10 @@ const antiBotAnalysisCache = new Map();
 const sessionPersistence = createSessionPersistence(chrome.storage.local);
 const indexedDbPersistence = createIndexedDbPersistence(globalThis.indexedDB);
 const { injectBridge, injectAgent } = createCaptureRouting(chrome);
+const sessionUpdateBroadcaster = createSessionUpdateBroadcaster({
+  sendMessage: message => chrome.runtime.sendMessage(message),
+  delay: 400
+});
 
 const DEFAULT_COUNTERS = Object.freeze({
   requests: 0, responses: 0, bodies: 0, domEvents: 0, navigations: 0, sources: 0,
@@ -1380,7 +1385,7 @@ async function handlePageEvent(tabId, payload, senderContext = {}) {
     pushTimeline(session, { ...canonical, label: timelineLabel(canonical), data: canonical.data });
   }
   scheduleFlush(tabId);
-  chrome.runtime.sendMessage({ type: 'BRT_SESSION_UPDATED', tabId }).catch(() => {});
+  sessionUpdateBroadcaster.schedule(tabId);
 }
 
 async function activeTab() {
