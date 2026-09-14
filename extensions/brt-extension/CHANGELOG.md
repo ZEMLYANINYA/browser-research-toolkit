@@ -16,6 +16,8 @@
 - Session START, IMPORT, STOP, CLEAR, and tab-close lifecycle paths now coordinate explicitly with durable persistence.
 - Bulk source, HTML, and runtime state is persisted independently from the bounded session header instead of requiring full session rewrites.
 - Split independently testable capture routing, network analysis, CDP event sanitization, timeline-label formatting, session search, read/query control handling, and bounded mutating control handling out of the MV3 service-worker composition root.
+- Navigation-preserving START now requests optional host access for the specific active research origin from the explicit Start gesture; the permission surface remains origin-scoped rather than blanket HTTP(S) access.
+- The side-panel version label is rendered from `manifest.json` instead of a hard-coded release string.
 
 ### Reliability
 
@@ -24,12 +26,15 @@
 - Producer-continuity cursor eviction is bounded and surfaced through diagnostics rather than being silent.
 - Service-worker recovery records an explicit recovery diagnostic and preserves observable producer-gap evidence through durable export.
 - Corrected CDP WebSocket handling to match real Chromium `Network.webSocket*` event casing and `params.response` frame metadata.
+- Same-origin hard navigations can retain page-level capture after an explicit capture-origin grant; unapproved cross-origin top-level navigation remains fail-closed and interrupts the session with `capture-continuity-lost`.
 
 ### Fixed
 
 - Narrowed analytics/telemetry classification so Google Maps logging endpoints such as `log204`, `gen_204`, and eligible Google `/log` traffic are excluded from Parser Blueprint workflow evidence without misclassifying Street View `/v1/tile` traffic or Maps `/maps/_/wa/...wasm` resources.
 - Parser Blueprint now re-evaluates retained network evidence with the current analytics classifier instead of trusting stale stored classifications.
 - Producer sequence gaps are surfaced as structured Blueprint evidence gaps with bounded detailed Markdown rendering; IndexedDB recovery remains contextual evidence rather than being labeled as a gap.
+- Prevented an unstarted/stopped session with `startedAt` equal to `null` or `0` from displaying a duration measured from the Unix epoch.
+- Capture START is fail-closed when the user denies the current research origin permission instead of beginning a run that cannot guarantee hard-navigation reinjection.
 
 ### Tests
 
@@ -42,6 +47,8 @@
 - Added a real MV3 worker-termination recovery test that verifies durable session identity and evidence survive execution-context restart.
 - Added real WebSocket/CDP validation that exposed incorrect event casing and frame metadata assumptions in the sanitizer.
 - Added Google Maps regression coverage for analytics classification, stale stored classifications, producer sequence gaps, and bounded evidence-gap Markdown output.
+- Added capture-origin permission derivation/denial regressions and session-duration fallback coverage.
+- Added headed real-Chromium coverage proving that an explicitly granted capture origin survives same-origin hard navigation while an unapproved cross-origin top-level navigation still interrupts capture.
 
 ## 0.5.0 - 2026-09-01
 

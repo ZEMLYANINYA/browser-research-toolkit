@@ -16,6 +16,8 @@ BRT aims to:
 - distinguish page-originated evidence from extension/browser-controlled evidence;
 - reject stale page events from prior runs;
 - avoid extension-origin third-party source requests by default;
+- request persistent web-origin authority only from explicit user gestures and only for a specific origin;
+- fail closed when top-level capture continuity cannot be preserved;
 - restore page wrappers when capture stops;
 - expose CDP attach failures rather than silently claiming Deep mode;
 - avoid remote code loading and external extension messaging.
@@ -62,21 +64,29 @@ browser-authenticated truth.
 The bridge uses extension runtime messaging. The service worker validates BRT messages and uses `sender.tab` context for page
 events. The extension manifest does not expose `externally_connectable`.
 
-### Boundary C: service worker -> remote web origin
+### Boundary C: service worker / side panel -> remote web origin
 
-The extension does not require permanent broad HTTP(S) host access for ordinary capture. Normal page instrumentation uses
-`activeTab` plus `scripting` after an explicit user action.
+The extension does not require permanent mandatory broad HTTP(S) host access. Initial capture authority is user-driven through
+`activeTab` plus `scripting`.
 
-Broad HTTP(S) match patterns are declared only as optional host permissions so that source access can be granted at runtime for a
-specific origin.
+Broad HTTP(S) match patterns are declared only as `optional_host_permissions`. At runtime BRT requests only a specific origin,
+and only from an explicit user gesture. There are two independent uses of that optional surface:
+
+1. **Capture-origin continuity**: when the user clicks **Start capture**, the side panel requests access to the current HTTP(S)
+   research origin before starting a navigation-preserving run. Denial is fail-closed: the run is not started. A later
+   top-level navigation to a different, unapproved origin does not trigger automatic permission expansion. If reinjection is
+   unavailable, the session becomes `interrupted` and records `capture-continuity-lost` instead of falsely staying `running`.
+2. **Third-party source indexing**: a user may separately click **Allow host** for a specific blocked source origin. Denial does
+   not stop the current capture; the source remains metadata-only. A granted source origin is retained in the live session
+   allowlist and is verified again by the service worker before extension-origin network I/O.
 
 External-source access is evaluated in two separate gates **before network I/O**:
 
-- same-hostname source: allowed by the deterministic source policy and fetched when the current tab authority permits it;
+- same-hostname source: allowed by the deterministic source policy and fetched when the current tab/host authority permits it;
 - third-party source without a session host opt-in: blocked before fetch;
 - third-party source with a session host opt-in but without the corresponding Chrome host permission: blocked before fetch;
 - third-party source with both session opt-in and Chrome host permission: allowed;
-- denial of an optional host permission is retained as an explicit diagnostic and does not stop the research session.
+- denial of an optional third-party source permission is retained as an explicit diagnostic and does not stop the research session;
 - invalid/unsupported URL: blocked.
 
 Blocked sources remain visible as metadata-only evidence with the policy reason.
@@ -122,15 +132,15 @@ should review exports before publication or sharing.
 
 | Permission | Security implication | Mitigation / reason |
 | --- | --- | --- |
-| `activeTab` | Temporary access to the current tab context | User-driven research workflow; avoids permanent mandatory access to every web origin. |
+| `activeTab` | Temporary access to the current tab context | User-driven authority to begin capture without mandatory permanent access to every web origin. |
 | `scripting` | Can execute extension code in a page | Used for on-demand bridge/agent injection after START. No remote code loading. |
-| `tabs` | Reads tab metadata | Used for session/tab lifecycle. |
-| `sidePanel` | Adds UI surface | Dashboard only. |
+| `tabs` | Reads tab metadata | Used for session/tab lifecycle and to bind the explicit START gesture to the current research tab. |
+| `sidePanel` | Adds UI surface | Dashboard and explicit permission/start controls only. |
 | `storage` | Persists research evidence | Local extension storage; bounded by BRT retention logic. |
 | `unlimitedStorage` | Raises browser quota | BRT still applies its own approximate byte and collection limits. |
-| `webNavigation` | Observes navigation | Used for browser-controlled hard-navigation provenance. |
+| `webNavigation` | Observes navigation | Used for browser-controlled hard-navigation provenance and fail-closed continuity handling. |
 | `debugger` | Powerful CDP access | Used only by optional Deep mode; state/failures are visible in UI. |
-| Optional HTTP(S) host access | Can authorize extension-origin requests to a remote web origin | Declared as optional, requested per origin from an explicit source-UI user gesture, verified again by the service worker before fetch, and recorded in the live session allowlist. |
+| Optional HTTP(S) host access | Can authorize reinjection and extension-origin requests on a remote origin | Declared as optional only; requested per origin from explicit user gestures. Capture-origin denial prevents a navigation-preserving START. Third-party source grants are independently verified before fetch and retained in the live session allowlist. |
 
 ## Data handling
 

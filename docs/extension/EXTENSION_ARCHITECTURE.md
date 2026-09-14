@@ -54,7 +54,10 @@ independent version lines.
                                 | chrome.runtime
                                 v
 +-----------------------------------------------------------------------+
-|  Side panel: ui/panel.html + panel.js + dashboard-metrics.js          |
+|  Side panel: ui/panel.html + panel-bootstrap.js + panel.js            |
+|              + dashboard-metrics.js                                   |
+|  - explicit capture-origin permission before navigation-preserving    |
+|    START                                                              |
 |  - overview / timeline / network / sources                            |
 |  - correlation graph / diagnostics / anti-bot                         |
 |  - task state / session dump / search                                 |
@@ -189,6 +192,19 @@ invalid/unsupported URL
 A blocked third-party source is retained as metadata-only evidence. This preserves research context without silently creating
 an extension-origin cross-site request.
 
+### `ui/capture-origin-permission.js` and `ui/panel-bootstrap.js`
+
+`capture-origin-permission.js` derives a single HTTP(S) match pattern from the current research URL and invokes
+`chrome.permissions.request()` immediately from the Start user gesture. It never expands the request to blanket HTTP(S) access.
+
+`panel-bootstrap.js` maintains a current active-tab snapshot for the side panel, renders the extension version directly from the
+manifest, and intercepts the Start button before `panel.js` can send `BRT_START`. A denied or failed capture-origin permission is
+fail-closed: the Start event is not replayed. After a grant, the bootstrap re-checks that the same tab/origin is still active
+before replaying the Start click to the existing session-lifecycle handler.
+
+This capture-origin grant is distinct from the source-host allowlist described above. It exists so an explicit
+navigation-preserving research run can reinject the bridge/agent after same-origin top-level document replacement.
+
 ### `src/task-runner.js` and `src/rate-limiter.js`
 
 Background work is modeled as bounded tasks with cancellation, timeout, retry metadata, queue limits, and per-key rate limits.
@@ -229,13 +245,30 @@ It derives:
 Every nontrivial derived conclusion retains evidence references and confidence/provenance rather than becoming an unsupported implementation claim.
 
 `parser-blueprint-markdown.js` is a deterministic renderer over that structured model. It does not inspect the live page or perform additional network activity.
+
 ### `ui/*`
 
-The side panel is a consumer of the service-worker session model. It does not own capture state.
+The side panel is a consumer of the service-worker session model. It does not own capture state. It does own the explicit user
+gesture that authorizes the current capture origin before a navigation-preserving START request is sent.
 
 ## Session model
 
-A new run receives both a monotonically scoped `generation` and a random `runId`.
+A navigation-preserving side-panel run begins with an explicit origin-scoped permission gate:
+
+```text
+user clicks Start capture
+   |
+   +--> derive current http(s) origin
+   +--> chrome.permissions.request(current origin)
+           |
+           +-- denied -> do not send BRT_START
+           |
+           `-- granted -> confirm same tab/origin is still active
+                              |
+                              `--> send BRT_START
+```
+
+The service-worker run then receives both a monotonically scoped `generation` and a random `runId`.
 
 ```text
 BRT_START
@@ -288,6 +321,11 @@ Hard-navigation records from `chrome.webNavigation` are labeled browser-controll
 After START, the extension injects its isolated bridge into eligible frames rather than treating the tab as a single execution
 context. Each bridge announces readiness, and the service worker injects the MAIN-world page agent into that specific frame only
 while the session is still current and live. Hard navigations repeat this frame-scoped handshake only for an active capture.
+
+The explicit capture-origin grant allows same-origin top-level hard navigation to retain injection authority after the original
+`activeTab` gesture would otherwise be insufficient for a replaced document. It does not authorize a different origin. If a
+top-level navigation lands on an origin without explicit host authority and reinjection fails, the service worker keeps the
+existing fail-closed rule: `session.running = false`, `runState = interrupted`, and `capture-continuity-lost` is recorded.
 
 Chrome-controlled sender/navigation metadata defines canonical frame provenance:
 
@@ -347,6 +385,7 @@ The side panel requests Blueprint generation explicitly through the service work
 Workflow relationships use evidence-honest language. For example, a hard navigation immediately observed after a form submission is represented as `observed-after-form-submit`; this records ordering and evidence without asserting proven JavaScript/network causation.
 
 Request-body analysis is schema-oriented. Object keys, form field names, structural type, provenance, and confidence may be retained, while source payload values are not copied into the derived Blueprint.
+
 ## Capture modes and CDP state
 
 The requested mode and effective mode are intentionally separate.
@@ -459,6 +498,8 @@ The v0.6 architecture is validated against real Chromium in addition to unit and
 The real-browser smoke suite covers:
 
 - explicit START/STOP capture lifecycle;
+- same-origin hard-navigation continuity after an explicit capture-origin host grant;
+- fail-closed interruption on an unapproved cross-origin top-level navigation;
 - frame and document provenance across iframe navigation;
 - trusted DOM-to-network correlation;
 - explicit optional third-party source host-permission flow;
