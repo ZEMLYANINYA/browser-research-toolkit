@@ -452,3 +452,85 @@ test('flushSessionNow drains an existing in-flight flush before returning', () =
   assert.ok(cleanGuard > freshFlush);
   assert.ok(resultReturn > cleanGuard);
 });
+test('loadSession restores the generation clock monotonically before installing the session', () => {
+  const start =
+    background.indexOf(
+      'async function loadSession(tabId) {'
+    );
+
+  const end =
+    background.indexOf(
+      '\nfunction getSessionRecordDelta',
+      start
+    );
+
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+
+  const source =
+    background.slice(start, end);
+
+  const loaded =
+    source.indexOf(
+      'const loadedGeneration ='
+    );
+
+  const parse =
+    source.indexOf(
+      'Number(session.generation)',
+      loaded
+    );
+
+  const guard =
+    source.indexOf(
+      'Number.isInteger(loadedGeneration)',
+      parse
+    );
+
+  const seed =
+    source.indexOf(
+      'generationCounters.set(',
+      guard
+    );
+
+  const monotonic =
+    source.indexOf(
+      'Math.max(',
+      seed
+    );
+
+  const current =
+    source.indexOf(
+      'generationCounters.get(tabId) || 0',
+      monotonic
+    );
+
+  const recovered =
+    source.indexOf(
+      'loadedGeneration',
+      current
+    );
+
+  const install =
+    source.indexOf(
+      'sessions.set(tabId, session);',
+      recovered
+    );
+
+  assert.ok(loaded >= 0);
+  assert.ok(parse > loaded);
+  assert.ok(guard > parse);
+  assert.ok(seed > guard);
+  assert.ok(monotonic > seed);
+  assert.ok(current > monotonic);
+  assert.ok(recovered > current);
+  assert.ok(install > recovered);
+
+  const startSource =
+    startLifecycleSource();
+
+  assert.match(
+    startSource,
+    /session\.generation = \(generationCounters\.get\(tab\.id\) \|\| 0\) \+ 1;/
+  );
+});

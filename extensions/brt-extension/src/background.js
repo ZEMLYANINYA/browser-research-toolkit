@@ -242,6 +242,25 @@ async function loadSession(tabId) {
       diagnostic(session, 'indexeddb-recovery-fallback', detail);
     }
 
+    // Re-seed the in-memory generation clock from the loaded session. MV3
+    // service-worker restarts clear module state but must not make a later START
+    // reuse an older generation.
+    const loadedGeneration =
+      Number(session.generation);
+
+    if (
+      Number.isInteger(loadedGeneration) &&
+      loadedGeneration >= 0
+    ) {
+      generationCounters.set(
+        tabId,
+        Math.max(
+          generationCounters.get(tabId) || 0,
+          loadedGeneration
+        )
+      );
+    }
+
     // Never trust persisted incremental counters blindly. Rebuild once from the
     // actual retained collections so stale accounting cannot trigger trim loops.
     rebuildStorageStats(session);
